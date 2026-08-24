@@ -1,0 +1,36 @@
+# Сборка
+/bin/
+/dist/
+*.exe
+*.dll
+*.sys
+*.syso
+
+# Go
+/vendor/
+*.test
+*.out
+coverage.*
+
+# Wails
+/cmd/net-gui/frontend/node_modules/
+/cmd/net-gui/frontend/dist/
+/cmd/net-gui/build/bin/
+
+# Секреты и локальные конфиги — НИКОГДА не коммитим (S6, S7)
+*.local.yaml
+*.local.json
+/secrets/
+/testdata/live/
+
+# Артефакты экспериментов, кроме отчётов
+/docs/experiments/artifacts/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# ОС
+Thumbs.db
+desktop.ini

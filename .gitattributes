@@ -1,0 +1,24 @@
+# Нормализация переводов строк.
+# Проект разрабатывается на Windows, но собирается и на Linux/macOS (T9),
+# а CI работает на обеих платформах. Без этого файла diff'ы засоряются
+# сменой CRLF/LF, а shell-скрипты ломаются на Linux.
+
+* text=auto eol=lf
+
+# Файлы, которые обязаны иметь CRLF на Windows
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Бинарные — не трогать
+*.exe  binary
+*.dll  binary
+*.sys  binary
+*.png  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+
+# Go
+*.go   text eol=lf
+go.sum text eol=lf -diff

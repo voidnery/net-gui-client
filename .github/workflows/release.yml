@@ -1,0 +1,155 @@
+name: Release
+
+# Автоматическая простановка тега версии при пуше и выпуск релиза.
+#
+# Как это работает:
+#   • версия хранится в файле VERSION в корне репозитория;
+#   • пуш в master → тег vX.Y.Z, обычный релиз;
+#   • пуш в beta   → тег vX.Y.Z-beta.<номер сборки>, пред-релиз;
+#   • если тег уже существует, задание завершается без действий —
+#     то есть обычные пуши без изменения VERSION ничего не выпускают.
+#
+# Теги подписываются GPG-ключом из секретов репозитория и получают на GitHub
+# отметку «Verified». Если секрет GPG_PRIVATE_KEY не задан, тег всё равно
+# создаётся, но без подписи и с предупреждением в журнале — репозиторий
+# остаётся работоспособным до настройки ключа.
+#
+# Настройка ключа и секретов — docs/github-setup.md, шаг 6.
+
+on:
+  push:
+    branches: [master, beta]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Проставить тег версии
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      created: ${{ steps.create.outputs.created }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # нужна полная история и все теги
+
+      - name: Определить имя тега
+        id: plan
+        run: |
+          set -euo pipefail
+          if [ ! -f VERSION ]; then
+            echo "::error::Файл VERSION не найден в корне репозитория"
+            exit 1
+          fi
+          VER="$(tr -d ' \t\r\n' < VERSION)"
+          if ! printf '%s' "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION должен быть вида X.Y.Z, а получено: '$VER'"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" = "beta" ]; then
+            echo "tag=v${VER}-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Создать и запушить подписанный тег
+        id: create
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Тег ${TAG} уже существует — выпуск пропущен."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "${GPG_PRIVATE_KEY}" ]; then
+            echo "${GPG_PRIVATE_KEY}" | gpg --batch --quiet --import
+            KEY_ID="$(gpg --list-secret-keys --with-colons \
+                      | awk -F: '/^sec:/ { print $5; exit }')"
+            KEY_UID="$(gpg --list-secret-keys --with-colons \
+                       | awk -F: '/^uid:/ { print $10; exit }')"
+            KEY_NAME="${KEY_UID%% <*}"
+            KEY_MAIL="${KEY_UID##*<}"; KEY_MAIL="${KEY_MAIL%>}"
+
+            git config user.name  "${KEY_NAME}"
+            git config user.email "${KEY_MAIL}"
+            git config user.signingkey "${KEY_ID}"
+            git config tag.gpgsign true
+            git config gpg.program gpg
+
+            # Неинтерактивный ввод парольной фразы в CI
+            mkdir -p ~/.gnupg
+            echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+            echo "pinentry-mode loopback"  >> ~/.gnupg/gpg.conf
+            gpgconf --kill gpg-agent || true
+
+            echo "Подписываю тег ${TAG} ключом ${KEY_ID}"
+            echo "${GPG_PASSPHRASE}" \
+              | git tag -s "${TAG}" -m "Release ${TAG}" \
+                  --local-user "${KEY_ID}" 2>/dev/null \
+              || git tag -s "${TAG}" -m "Release ${TAG}"
+          else
+            echo "::warning::Секрет GPG_PRIVATE_KEY не задан — тег создаётся БЕЗ подписи. См. docs/github-setup.md, шаг 6."
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+          fi
+
+          git push origin "refs/tags/${TAG}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Собрать и опубликовать релиз
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Сборка
+        shell: bash
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VER="${TAG#v}"
+          for pkg in ./cmd/net-cli; do
+            name="$(basename "$pkg")"
+            go build -trimpath \
+              -ldflags "-s -w -X main.Version=${VER}" \
+              -o "dist/${name}.exe" "$pkg"
+          done
+          ls -la dist
+
+      - name: Контрольные суммы
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          prerelease: ${{ needs.tag.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
