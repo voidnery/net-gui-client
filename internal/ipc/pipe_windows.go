@@ -40,13 +40,27 @@ const PipeName = `\\.\pipe\net-gui-client`
 // добавило разрешений сверху.
 const pipeSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
 
-// Listen создаёт именованный канал и возвращает слушатель.
+// ListenOptions — параметры создания канала управления.
+type ListenOptions struct {
+	// TrustedDir — каталог, из которого разрешено подключаться клиентам
+	// (мера S2). Пустая строка ОТКЛЮЧАЕТ проверку и допустима только в
+	// режиме разработчика: см. cmd/net-svc.
+	TrustedDir string
+
+	// OnReject вызывается при отклонении подключения. Нужен для журнала:
+	// молча отброшенное соединение выглядит как «клиент не запускается»,
+	// и диагностировать это невозможно.
+	OnReject func(info ClientInfo, err error)
+}
+
+// Listen создаёт именованный канал и возвращает слушатель, проверяющий
+// каждое входящее подключение (меры S1 и S2 из ADR-006).
 //
-// Флаг первого экземпляра канала задаётся библиотекой: winio.ListenPipe
+// Флаг первого экземпляра канала обеспечивается библиотекой: winio.ListenPipe
 // возвращает ошибку, если канал с таким именем уже существует. Это защита от
 // сценария «атакующий занял канал раньше службы» — того самого, что лежит в
 // основе CVE-2024-4877.
-func Listen() (net.Listener, error) {
+func Listen(opts ListenOptions) (net.Listener, error) {
 	ln, err := winio.ListenPipe(PipeName, &winio.PipeConfig{
 		SecurityDescriptor: pipeSDDL,
 		MessageMode:        false,
@@ -56,7 +70,39 @@ func Listen() (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ipc: создание канала %s: %w", PipeName, err)
 	}
-	return ln, nil
+	return &verifyingListener{Listener: ln, opts: opts}, nil
+}
+
+// verifyingListener отсеивает недоверенные подключения на этапе Accept,
+// до того как gRPC начнёт разбирать что-либо, пришедшее от клиента.
+type verifyingListener struct {
+	net.Listener
+	opts ListenOptions
+}
+
+func (l *verifyingListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+
+		info, verr := VerifyClient(conn, l.opts.TrustedDir)
+		if verr == nil {
+			return conn, nil
+		}
+
+		// Отклонённое подключение закрывается, а цикл продолжается.
+		//
+		// Возвращать ошибку наружу нельзя: gRPC воспримет её как отказ
+		// слушателя и прекратит обслуживание. Тогда одна попытка
+		// недоверенного клиента останавливала бы службу целиком —
+		// отказ в обслуживании ценой в один запуск постороннего процесса.
+		_ = conn.Close()
+		if l.opts.OnReject != nil {
+			l.opts.OnReject(info, verr)
+		}
+	}
 }
 
 // Dial подключается к каналу службы.

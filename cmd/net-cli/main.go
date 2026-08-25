@@ -26,8 +26,41 @@ var Version = "dev"
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		if hint := explain(err); hint != "" {
+			fmt.Fprintln(os.Stderr, "\n"+hint)
+		}
 		os.Exit(1)
 	}
+}
+
+// explain переводит технические ошибки транспорта в понятную подсказку.
+//
+// Без этого пользователь, чей запрос отклонила проверка доверия (мера S2),
+// видит только «error reading server preface: EOF» — сообщение, по которому
+// невозможно догадаться ни о причине, ни о том, что делать дальше.
+func explain(err error) string {
+	msg := err.Error()
+
+	switch {
+	case strings.Contains(msg, "The system cannot find the file specified"),
+		strings.Contains(msg, "cannot find the file"):
+		return "Похоже, служба net-svc не запущена.\n" +
+			"  Проверьте состояние:   net-svc status\n" +
+			"  Запустите:             net-svc start   (нужны права администратора)"
+
+	case strings.Contains(msg, "server preface"),
+		strings.Contains(msg, "connection reset"):
+		return "Служба разорвала соединение сразу после подключения.\n" +
+			"  Наиболее вероятная причина — проверка доверия к клиенту (мера S2):\n" +
+			"  net-cli должен запускаться из того же каталога, что и net-svc.\n" +
+			"  Точная причина записана в журнал службы."
+
+	case strings.Contains(msg, "Access is denied"),
+		strings.Contains(msg, "Отказано в доступе"):
+		return "Нет прав на подключение к каналу управления.\n" +
+			"  Канал доступен только интерактивным пользователям этого компьютера."
+	}
+	return ""
 }
 
 func run(args []string) error {

@@ -1,13 +1,15 @@
-// Command net-svc — служба управления подключением.
+// Command net-svc — привилегированная служба управления подключением.
 //
-// На итерации И-1 это консольное приложение, а не служба Windows. Разделение
-// намеренное: «заставить трафик пойти» и «сделать привилегированную службу
-// безопасной» — две разные задачи, и смешивать их в одной итерации значит
-// отлаживать обе сразу. Служба под LocalSystem появляется в И-2 вместе с
-// мерами S1, S2, S5 из ADR-006.
+// Работает в двух режимах:
+//   - под диспетчером служб Windows (обычная эксплуатация, LocalSystem);
+//   - как консольное приложение (`net-svc run`) — для отладки.
+//
+// Режим определяется автоматически: svc.IsWindowsService() сообщает, кто нас
+// запустил. Разделение нужно, чтобы отлаживать логику, не переустанавливая
+// службу на каждый прогон.
 //
 // Принцип P1 (ADR-004): вся функциональность доступна через контракт gRPC.
-// Графический интерфейс — лишь один из клиентов, и он появится в И-3.
+// Графический интерфейс — лишь один из клиентов.
 package main
 
 import (
@@ -15,66 +17,98 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
-	"github.com/bbesport/net-gui-client/internal/ipc"
-	"github.com/bbesport/net-gui-client/internal/orchestration/session"
-	"github.com/bbesport/net-gui-client/internal/store"
-
-	"google.golang.org/grpc"
+	"golang.org/x/sys/windows/svc"
 )
 
 // Version подставляется линкером при релизной сборке.
 var Version = "dev"
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	dir, err := dataDir()
+func run(args []string) error {
+	// Когда службу запускает диспетчер, аргументов может не быть вовсе.
+	// Проверка «кто нас запустил» обязана идти первой.
+	isService, err := svc.IsWindowsService()
 	if err != nil {
-		return err
+		return fmt.Errorf("определение режима запуска: %w", err)
+	}
+	if isService {
+		return runService()
 	}
 
-	profiles, err := store.OpenProfiles(filepath.Join(dir, "profiles.json"))
-	if err != nil {
-		return err
+	command := "run"
+	if len(args) > 0 {
+		command = args[0]
 	}
 
-	// Ctrl+C и завершение от системы приводят к корректной остановке,
-	// а не к обрыву. Это часть принципа P-G: изменения обратимы.
+	switch command {
+	case "run":
+		return runConsole()
+	case "install":
+		return installService()
+	case "uninstall":
+		return uninstallService()
+	case "start":
+		return startService()
+	case "stop":
+		return stopService()
+	case "status":
+		return statusService()
+	case "version":
+		fmt.Printf("net-svc %s\n", Version)
+		return nil
+	case "help", "-h", "--help":
+		usage()
+		return nil
+	default:
+		return fmt.Errorf("неизвестная команда %q (попробуйте 'net-svc help')", command)
+	}
+}
+
+func usage() {
+	fmt.Println(`net-svc — служба управления подключением
+
+Использование:
+  net-svc <команда>
+
+Команды:
+  run          запустить в консоли (режим отладки; по умолчанию)
+  install      установить службу Windows и включить автозапуск
+  uninstall    остановить и удалить службу
+  start        запустить установленную службу
+  stop         остановить службу
+  status       показать состояние службы
+  version      версия
+  help         эта справка
+
+Команды install, uninstall, start и stop требуют прав администратора.
+
+Обычному пользователю запускать net-svc вручную не нужно: службу
+устанавливает инсталлятор, а управление идёт через net-cli или графический
+интерфейс по каналу управления.`)
+}
+
+// runConsole запускает службу как обычное приложение — для отладки.
+func runConsole() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Менеджер получает контекст ЖИЗНИ ПРОЦЕССА. Ядро живёт дольше любого
-	// отдельного вызова gRPC, поэтому контекст запроса ему не годится.
-	manager := session.NewManager(ctx)
-	// Уборка при любом выходе: сессия не должна пережить процесс.
-	defer func() {
-		if err := manager.Close(); err != nil {
-			fmt.Fprintln(os.Stderr, "warn: остановка сессии:", err)
-		}
-	}()
-
-	listener, err := ipc.Listen()
+	application, err := newApp(ctx, newConsoleLogger(os.Stdout))
 	if err != nil {
 		return err
 	}
-
-	grpcServer := grpc.NewServer()
-	ipc.NewServer(Version, profiles, manager).Register(grpcServer)
+	defer application.stop()
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- grpcServer.Serve(listener) }()
+	go func() { serveErr <- application.serve() }()
 
-	fmt.Printf("net-svc %s\n", Version)
-	fmt.Printf("канал управления: %s\n", ipc.PipeName)
-	fmt.Printf("хранилище профилей: %s\n", dir)
 	fmt.Println("готов. Ctrl+C для остановки.")
 
 	select {
@@ -82,26 +116,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		fmt.Println("\nостановка...")
-		grpcServer.GracefulStop()
+		application.stop()
 		return nil
 	}
-}
-
-// dataDir возвращает каталог данных службы.
-//
-// ⚠️ В И-1 это каталог текущего пользователя, потому что net-svc пока не
-// служба. В И-2 каталог переезжает в %ProgramData% с ограничением прав на
-// запись (мера S5 из ADR-006). Прецедент, ради которого это важно, —
-// CVE-2025-8069: AWS Client VPN грузил конфигурацию из пути, доступного на
-// запись непривилегированному пользователю, что давало выполнение кода.
-func dataDir() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("net-svc: определение каталога данных: %w", err)
-	}
-	dir := filepath.Join(base, "net-gui-client")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("net-svc: создание каталога %s: %w", dir, err)
-	}
-	return dir, nil
 }

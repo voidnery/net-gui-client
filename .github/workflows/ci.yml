@@ -1,9 +1,13 @@
 name: CI
 
+# Ветки проекта — master и beta (docs/github-setup.md).
+# Здесь были main и dev: файл написан до выбора схемы веток, из-за чего
+# CI не запускался ни разу. Обнаружено при проверке первого пуша.
 on:
   push:
-    branches: [main, dev]
+    branches: [master, beta]
   pull_request:
+    branches: [master]
 
 jobs:
   build:
