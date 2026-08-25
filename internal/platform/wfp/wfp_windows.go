@@ -30,7 +30,7 @@ const (
 	// службы не оставляет систему с висящими правилами блокировки.
 	fwpmSessionFlagDynamic = 0x00000001
 
-	rpcCAuthnWinNT = 10
+	rpcCAuthnWinNT   = 10
 	rpcCAuthnDefault = 0xFFFFFFFF
 
 	// Действия фильтра. Флаг terminating означает, что решение окончательное
@@ -178,9 +178,9 @@ type filter0 struct {
 var (
 	modFwpuclnt = windows.NewLazySystemDLL("fwpuclnt.dll")
 
-	procFwpmEngineOpen0  = modFwpuclnt.NewProc("FwpmEngineOpen0")
-	procFwpmEngineClose0 = modFwpuclnt.NewProc("FwpmEngineClose0")
-	procFwpmFilterAdd0   = modFwpuclnt.NewProc("FwpmFilterAdd0")
+	procFwpmEngineOpen0   = modFwpuclnt.NewProc("FwpmEngineOpen0")
+	procFwpmEngineClose0  = modFwpuclnt.NewProc("FwpmEngineClose0")
+	procFwpmFilterAdd0    = modFwpuclnt.NewProc("FwpmFilterAdd0")
 	procFwpmFilterDelete0 = modFwpuclnt.NewProc("FwpmFilterDeleteById0")
 )
 

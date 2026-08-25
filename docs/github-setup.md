@@ -121,70 +121,92 @@
 
 ## Шаг 6. Настроить подпись тегов
 
-Теги версий будут подписываться GPG-ключом автоматически, а на GitHub получат отметку **Verified**. Ключ создаётся один раз.
+Теги версий подписываются автоматически и получают на GitHub отметку **Verified**. Ключ создаётся один раз.
 
-### 6.1. Создать ключ
+> ### Почему SSH, а не GPG
+>
+> Изначально здесь был описан GPG. От него мы отказались: сборка GnuPG, поставляемая с Git for Windows, при запуске из PowerShell падает с ошибкой
+> ```
+> gpg: error running '/usr/lib/gnupg/keyboxd': probably not installed
+> ```
+> Причина — файл `~/.gnupg/common.conf` со строкой `use-keyboxd`: gpg ищет вспомогательный демон по POSIX-пути `/usr/lib/gnupg/keyboxd`, который разрешается только внутри Git Bash.
+>
+> **Git умеет подписывать SSH-ключом** начиная с версии 2.34, GitHub это полностью поддерживает, а OpenSSH встроен в Windows. Ни демонов, ни агентов, ни парольных фраз — на порядок меньше того, что может сломаться.
+>
+> Если вы всё же предпочитаете GPG — почините его по инструкции в шаге 6.5, рабочий процесс поддерживает оба способа.
 
-GPG уже установлен вместе с Git — он лежит в `C:\Program Files\Git\usr\bin\gpg.exe`, но не прописан в `PATH`. Поэтому запускать его нужно по полному пути.
+### 6.1. Создать отдельный ключ для подписи
 
-Откройте **PowerShell** (обычный, не от администратора) и выполните:
+⚠️ **Не используйте существующий `id_ed25519`.** Тот ключ даёт доступ к вашим репозиториям, а приватный ключ подписи попадёт в секреты GitHub Actions. Нужен отдельный ключ, который умеет только подписывать.
+
+В **PowerShell** (обычном, не от администратора):
 
 ```powershell
-& 'C:\Program Files\Git\usr\bin\gpg.exe' --full-generate-key
+ssh-keygen -t ed25519 -C "net-gui-client tag signing" -f "$env:USERPROFILE\.ssh\net_gui_client_signing"
 ```
 
-Отвечайте так:
+На запрос парольной фразы **нажмите Enter дважды** — ключ должен быть без пароля, иначе CI не сможет им воспользоваться.
 
-| Вопрос | Ответ |
-|---|---|
-| `Please select what kind of key you want` | `1` — RSA and RSA |
-| `What keysize do you want?` | `4096` |
-| `Key is valid for?` | `0` — не истекает |
-| `Is this correct?` | `y` |
-| `Real name` | ваше имя или название проекта |
-| `Email address` | ⚠️ **тот же адрес, что в вашем аккаунте GitHub** |
-| `Comment` | можно оставить пустым |
-| `Change (N)ame, (C)omment, (E)mail or (O)kay` | `O` |
-| Парольная фраза | придумайте и **сохраните** — она понадобится в шаге 6.3 |
+Создадутся два файла:
+- `net_gui_client_signing` — приватный ключ (секрет);
+- `net_gui_client_signing.pub` — публичный ключ.
 
 ### 6.2. Добавить публичный ключ в аккаунт GitHub
 
-Получите отпечаток ключа:
-
 ```powershell
-& 'C:\Program Files\Git\usr\bin\gpg.exe' --list-secret-keys --keyid-format=long
+Get-Content "$env:USERPROFILE\.ssh\net_gui_client_signing.pub" | Set-Clipboard
 ```
 
-В выводе найдите строку вида `sec   rsa4096/AABBCCDDEEFF0011` — часть после косой черты и есть идентификатор ключа.
+На github.com: **аватар → Settings → SSH and GPG keys → New SSH key**.
 
-Выведите публичный ключ, подставив свой идентификатор:
+| Поле | Значение |
+|---|---|
+| **Title** | `net-gui-client tag signing` |
+| **Key type** | ⚠️ **Signing Key** — не Authentication Key |
+| **Key** | вставьте из буфера обмена |
 
-```powershell
-& 'C:\Program Files\Git\usr\bin\gpg.exe' --armor --export AABBCCDDEEFF0011 | Set-Clipboard
-```
+Нажмите **Add SSH key**.
 
-Ключ скопирован в буфер обмена. Теперь на github.com: **аватар → Settings → SSH and GPG keys → New GPG key** → вставьте → **Add GPG key**.
+> Выбор **Signing Key** обязателен. С типом Authentication Key подпись работать будет, но GitHub не покажет отметку Verified.
 
 ### 6.3. Добавить приватный ключ в секреты репозитория
 
-⚠️ Приватный ключ — это секрет. Он попадает в защищённое хранилище GitHub Actions и в репозиторий **не** коммитится.
-
-Экспортируйте приватный ключ в буфер обмена:
-
 ```powershell
-& 'C:\Program Files\Git\usr\bin\gpg.exe' --armor --export-secret-keys AABBCCDDEEFF0011 | Set-Clipboard
+Get-Content "$env:USERPROFILE\.ssh\net_gui_client_signing" -Raw | Set-Clipboard
 ```
 
-На github.com, в репозитории: **Settings → Secrets and variables → Actions → New repository secret**.
-
-Создайте два секрета:
+В репозитории на github.com: **Settings → Secrets and variables → Actions → вкладка Secrets → New repository secret**.
 
 | Name | Secret |
 |---|---|
-| `GPG_PRIVATE_KEY` | вставьте содержимое буфера обмена целиком, включая строки `-----BEGIN PGP PRIVATE KEY BLOCK-----` и `-----END PGP PRIVATE KEY BLOCK-----` |
-| `GPG_PASSPHRASE` | парольная фраза из шага 6.1 |
+| `SSH_SIGNING_KEY` | вставьте целиком, включая строки `-----BEGIN OPENSSH PRIVATE KEY-----` и `-----END OPENSSH PRIVATE KEY-----` |
 
-> Если пропустить этот шаг, теги всё равно будут создаваться — но без подписи, и в журнале сборки появится предупреждение. Репозиторий останется работоспособным.
+### 6.4. Указать, от чьего имени подписывать
+
+Там же, но на вкладке **Variables** → **New repository variable**. Переменные, в отличие от секретов, не скрываются — это просто имя и почта в метаданных тега.
+
+| Name | Value |
+|---|---|
+| `SIGNER_NAME` | ваше имя |
+| `SIGNER_EMAIL` | ⚠️ адрес, привязанный к вашему аккаунту GitHub |
+
+> Если пропустить весь шаг 6, теги всё равно будут создаваться — без подписи и с предупреждением в журнале. Репозиторий останется работоспособным.
+
+### 6.5. Альтернатива: починить GPG
+
+Нужно, только если вы предпочитаете GPG вместо SSH.
+
+Причина сбоя — включённый `keyboxd`. Отключается удалением одной строки:
+
+```powershell
+Rename-Item "$env:USERPROFILE\.gnupg\common.conf" "common.conf.backup"
+```
+
+После этого gpg вернётся к классическому хранилищу ключей, и `--full-generate-key` отработает. Файл переименован, а не удалён — вернуть исходное состояние можно обратным переименованием.
+
+Второй вариант: запускать gpg не из PowerShell, а из **Git Bash** (правый клик в папке → *Open Git Bash here*) — там POSIX-путь к `keyboxd` разрешается корректно и `common.conf` трогать не нужно.
+
+Дальше — стандартная процедура GPG: создать ключ, добавить публичный в **Settings → SSH and GPG keys → New GPG key**, а приватный положить в секреты как `GPG_PRIVATE_KEY`, парольную фразу — как `GPG_PASSPHRASE`. Рабочий процесс использует GPG, если секрет `SSH_SIGNING_KEY` не задан.
 
 ---
 
@@ -249,9 +271,13 @@ go mod tidy
 
 затем закоммитьте изменённые файлы.
 
-**Тег создался без подписи.** Не заданы секреты из шага 6.3. Проверьте, что имена секретов написаны точно: `GPG_PRIVATE_KEY` и `GPG_PASSPHRASE`.
+**Тег создался без подписи.** Не задан секрет из шага 6.3. Проверьте, что имя написано точно: `SSH_SIGNING_KEY`.
+
+**Тег подписан, но GitHub не показывает «Verified».** Три обычные причины: в шаге 6.2 выбран тип **Authentication Key** вместо **Signing Key**; значение переменной `SIGNER_EMAIL` не совпадает с адресом, привязанным к аккаунту GitHub; публичный ключ добавлен не в тот аккаунт.
 
 **Не удаётся запушить в master.** Так и должно быть после шага 5. Работайте в `beta` и переливайте через Pull Request.
+
+**GPG падает с `error running '/usr/lib/gnupg/keyboxd'`.** Известная поломка сборки GnuPG в Git for Windows. Решение — шаг 6.5. Либо просто используйте SSH-подпись, где этой проблемы нет.
 
 **GPG сообщает `Inappropriate ioctl for device`.** Запрос парольной фразы не смог открыться. Запустите команду в обычном окне PowerShell, а не во встроенном терминале редактора.
 

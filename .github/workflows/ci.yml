@@ -32,4 +32,14 @@ jobs:
         run: go vet ./...
 
       - name: Test
+        run: go test ./...
+
+      # Детектор гонок требует cgo, а значит и компилятора C.
+      # На раннере windows-latest mingw-w64 предустановлен, поэтому здесь
+      # проверка работает. На машине разработчика без компилятора C
+      # `go test -race` завершится ошибкой «-race requires cgo» —
+      # это ожидаемо, локально достаточно обычного `go test ./...`.
+      - name: Test with race detector
+        env:
+          CGO_ENABLED: '1'
         run: go test -race ./...

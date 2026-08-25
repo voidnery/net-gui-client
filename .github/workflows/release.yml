@@ -9,12 +9,16 @@ name: Release
 #   • если тег уже существует, задание завершается без действий —
 #     то есть обычные пуши без изменения VERSION ничего не выпускают.
 #
-# Теги подписываются GPG-ключом из секретов репозитория и получают на GitHub
-# отметку «Verified». Если секрет GPG_PRIVATE_KEY не задан, тег всё равно
-# создаётся, но без подписи и с предупреждением в журнале — репозиторий
-# остаётся работоспособным до настройки ключа.
+# Теги подписываются и получают на GitHub отметку «Verified».
+# Поддерживаются два способа подписи, выбор автоматический:
 #
-# Настройка ключа и секретов — docs/github-setup.md, шаг 6.
+#   1. SSH-ключ  — секрет SSH_SIGNING_KEY   (рекомендуется, проще)
+#   2. GPG-ключ  — секреты GPG_PRIVATE_KEY и GPG_PASSPHRASE
+#
+# Если не задано ни одного, тег всё равно создаётся — без подписи и с
+# предупреждением в журнале. Репозиторий работоспособен до настройки ключа.
+#
+# Настройка ключей и секретов — docs/github-setup.md, шаг 6.
 
 on:
   push:
@@ -61,8 +65,11 @@ jobs:
         id: create
         env:
           TAG: ${{ steps.plan.outputs.tag }}
+          SSH_SIGNING_KEY: ${{ secrets.SSH_SIGNING_KEY }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          SIGNER_NAME: ${{ vars.SIGNER_NAME }}
+          SIGNER_EMAIL: ${{ vars.SIGNER_EMAIL }}
         run: |
           set -euo pipefail
 
@@ -72,36 +79,43 @@ jobs:
             exit 0
           fi
 
-          if [ -n "${GPG_PRIVATE_KEY}" ]; then
-            echo "${GPG_PRIVATE_KEY}" | gpg --batch --quiet --import
-            KEY_ID="$(gpg --list-secret-keys --with-colons \
-                      | awk -F: '/^sec:/ { print $5; exit }')"
-            KEY_UID="$(gpg --list-secret-keys --with-colons \
-                       | awk -F: '/^uid:/ { print $10; exit }')"
-            KEY_NAME="${KEY_UID%% <*}"
-            KEY_MAIL="${KEY_UID##*<}"; KEY_MAIL="${KEY_MAIL%>}"
+          git config user.name  "${SIGNER_NAME:-github-actions[bot]}"
+          git config user.email "${SIGNER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
 
-            git config user.name  "${KEY_NAME}"
-            git config user.email "${KEY_MAIL}"
-            git config user.signingkey "${KEY_ID}"
-            git config tag.gpgsign true
-            git config gpg.program gpg
+          if [ -n "${SSH_SIGNING_KEY}" ]; then
+            # --- Способ 1: подпись SSH-ключом (рекомендуется) ---------------
+            echo "Подписываю тег ${TAG} SSH-ключом"
+            install -d -m 700 ~/.ssh
+            printf '%s\n' "${SSH_SIGNING_KEY}" > ~/.ssh/tag_signing_key
+            chmod 600 ~/.ssh/tag_signing_key
 
-            # Неинтерактивный ввод парольной фразы в CI
-            mkdir -p ~/.gnupg
+            git config gpg.format ssh
+            git config user.signingkey ~/.ssh/tag_signing_key
+            git tag -s "${TAG}" -m "Release ${TAG}"
+
+            shred -u ~/.ssh/tag_signing_key 2>/dev/null || rm -f ~/.ssh/tag_signing_key
+
+          elif [ -n "${GPG_PRIVATE_KEY}" ]; then
+            # --- Способ 2: подпись GPG-ключом --------------------------------
+            mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
             echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
             echo "pinentry-mode loopback"  >> ~/.gnupg/gpg.conf
             gpgconf --kill gpg-agent || true
 
-            echo "Подписываю тег ${TAG} ключом ${KEY_ID}"
-            echo "${GPG_PASSPHRASE}" \
-              | git tag -s "${TAG}" -m "Release ${TAG}" \
-                  --local-user "${KEY_ID}" 2>/dev/null \
-              || git tag -s "${TAG}" -m "Release ${TAG}"
+            printf '%s\n' "${GPG_PRIVATE_KEY}" | gpg --batch --quiet --import
+            KEY_ID="$(gpg --list-secret-keys --with-colons \
+                      | awk -F: '/^sec:/ { print $5; exit }')"
+
+            echo "Подписываю тег ${TAG} GPG-ключом ${KEY_ID}"
+            git config user.signingkey "${KEY_ID}"
+            git config gpg.program gpg
+            gpg --batch --pinentry-mode loopback \
+                --passphrase "${GPG_PASSPHRASE}" \
+                --sign --output /dev/null /dev/null 2>/dev/null || true
+            git tag -s "${TAG}" -m "Release ${TAG}"
+
           else
-            echo "::warning::Секрет GPG_PRIVATE_KEY не задан — тег создаётся БЕЗ подписи. См. docs/github-setup.md, шаг 6."
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            echo "::warning::Ключ подписи не настроен — тег создаётся БЕЗ подписи. Задайте секрет SSH_SIGNING_KEY, см. docs/github-setup.md, шаг 6."
             git tag -a "${TAG}" -m "Release ${TAG}"
           fi
 

@@ -1,0 +1,185 @@
+syntax = "proto3";
+
+// Контракт управления службой net-svc.
+//
+// Согласно ADR-004 это продукт первого класса, а не деталь реализации GUI:
+// на нём говорят и net-cli, и net-gui, и будущий web UI для Linux server
+// edition. Принцип P1 (headless-first) означает, что любое действие
+// интерфейса выражается вызовом отсюда.
+//
+// Правило совместимости: изменения только аддитивные. Номера полей никогда
+// не переиспользуются — удалённые помечаются reserved. GUI и служба
+// обновляются независимо, и старый клиент не должен ломаться о новую службу.
+package netgui.v1;
+
+option go_package = "github.com/bbesport/net-gui-client/proto/netgui/v1;netguiv1";
+
+// ---------------------------------------------------------------------------
+// Общие типы
+// ---------------------------------------------------------------------------
+
+// Тип транспорта наружу.
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_SOCKS5 = 1;
+  // И-4: KIND_VLESS, KIND_HYSTERIA2, KIND_AMNEZIAWG, KIND_TROJAN, ...
+}
+
+// Профиль подключения — декларативное описание пути наружу.
+//
+// ⚠️ Мера S3 (ADR-006): служба принимает ТОЛЬКО такое описание.
+// Возможности передать сырой конфиг ядра не существует.
+message Profile {
+  string id = 1;
+  string name = 2;
+  Kind kind = 3;
+  string server = 4;
+  uint32 port = 5;  // проверяется на диапазон uint16 на стороне службы
+  string username = 6;
+
+  // ⚠️ Временно: в И-4 пароль переедет в защищённое хранилище (мера S6),
+  // а здесь останется только ссылка на секрет.
+  string password = 7;
+}
+
+// Что сделать с соединением.
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_PROXY = 1;
+  ACTION_DIRECT = 2;
+  ACTION_BLOCK = 3;
+}
+
+// Предикат соединения. Пустой матчер недопустим.
+message Matcher {
+  repeated string domain = 1;
+  repeated string domain_suffix = 2;
+  repeated string ip_cidr = 3;
+  // И-7: process_path, domain_regex, geoip, port, l4_protocol
+}
+
+message Rule {
+  Matcher matcher = 1;
+  Action action = 2;
+}
+
+// Политика маршрутизации.
+//
+// Порядок правил значим: выигрывает первое совпадение.
+// default_action = ACTION_DIRECT → «только выбранное через туннель»
+// default_action = ACTION_PROXY  → «всё через туннель, кроме выбранного»
+message Policy {
+  Action default_action = 1;
+  repeated Rule rules = 2;
+}
+
+// Фаза сессии. Соответствует конечному автомату из 03-architecture.md §6.2.
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_IDLE = 1;
+  SESSION_STATE_CONNECTING = 2;
+  SESSION_STATE_CONNECTED = 3;
+  // И-9/И-10: DEGRADED, FAILING, FAILED
+}
+
+message Status {
+  SessionState state = 1;
+  string profile_id = 2;
+  string listen_address = 3;  // "127.0.0.1:1080"
+  Policy policy = 4;
+  string error = 5;           // непустое, если последняя попытка не удалась
+}
+
+// ---------------------------------------------------------------------------
+// ControlService — рукопожатие и проверка совместимости версий
+// ---------------------------------------------------------------------------
+
+service ControlService {
+  rpc Hello(HelloRequest) returns (HelloResponse);
+}
+
+message HelloRequest {
+  string client_name = 1;
+  string client_version = 2;
+}
+
+message HelloResponse {
+  string server_version = 1;
+  // Версия контракта. Клиент с большим значением, чем у службы, обязан
+  // сообщить пользователю «обновите службу», а не падать по таймауту.
+  uint32 api_version = 2;
+}
+
+// ---------------------------------------------------------------------------
+// ProfileService — хранилище профилей
+// ---------------------------------------------------------------------------
+
+service ProfileService {
+  rpc List(ListProfilesRequest) returns (ListProfilesResponse);
+  rpc Put(PutProfileRequest) returns (PutProfileResponse);
+  rpc Remove(RemoveProfileRequest) returns (RemoveProfileResponse);
+}
+
+message ListProfilesRequest {}
+
+message ListProfilesResponse {
+  repeated Profile profiles = 1;
+}
+
+// Put создаёт профиль или заменяет существующий с тем же id.
+message PutProfileRequest {
+  Profile profile = 1;
+}
+
+message PutProfileResponse {
+  Profile profile = 1;
+}
+
+message RemoveProfileRequest {
+  string id = 1;
+}
+
+message RemoveProfileResponse {}
+
+// ---------------------------------------------------------------------------
+// SessionService — управление подключением
+// ---------------------------------------------------------------------------
+
+service SessionService {
+  rpc Connect(ConnectRequest) returns (Status);
+  rpc Disconnect(DisconnectRequest) returns (Status);
+  rpc GetStatus(GetStatusRequest) returns (Status);
+}
+
+message ConnectRequest {
+  string profile_id = 1;
+  Policy policy = 2;
+  // Порт локального inbound. 0 — выбрать свободный автоматически.
+  uint32 listen_port = 3;
+}
+
+message DisconnectRequest {}
+
+message GetStatusRequest {}
+
+// ---------------------------------------------------------------------------
+// EventService — поток событий от службы к клиентам
+// ---------------------------------------------------------------------------
+//
+// Именно ради этого потока в ADR-004 выбран gRPC, а не JSON-RPC: статусы,
+// метрики, логи и срабатывания failover должны приходить push'ом, а не
+// опросом. В И-1 поток передаёт только смену состояния сессии.
+
+service EventService {
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+}
+
+message SubscribeRequest {}
+
+message Event {
+  int64 unix_nano = 1;
+  oneof payload {
+    Status status_changed = 2;
+    // И-9: metrics, log_line, failover_switched, all_nodes_down
+  }
+}
