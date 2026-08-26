@@ -9,6 +9,19 @@ on:
   pull_request:
     branches: [master]
 
+# Теги сборки обязательны и одинаковы во всех шагах.
+#
+# with_wireguard, with_quic, with_gvisor включают протоколы, без которых ядро
+# не собирает нужные нам исходящие соединения. Сборка без них компилируется,
+# но молча теряет поддержку WireGuard/AmneziaWG и Hysteria2 — отказ проявится
+# только во время работы, у пользователя.
+#
+# Набор ещё и намеренно узкий: полный список тегов sing-box тянет клиентские
+# библиотеки Anthropic и OpenAI (with_ccm, with_ocm), которые этому проекту
+# не нужны и лишь увеличивают поверхность зависимостей.
+env:
+  GOFLAGS: -tags=with_wireguard,with_quic,with_gvisor
+
 jobs:
   build:
     runs-on: windows-latest
@@ -47,3 +60,33 @@ jobs:
         env:
           CGO_ENABLED: '1'
         run: go test -race ./...
+
+  # Форк wireguard-go — отдельный модуль (replace-директива в go.mod корня),
+  # поэтому `go test ./...` из корня его тесты НЕ запускает. Без этой задачи
+  # обфускация AmneziaWG осталась бы непокрытой в CI, хотя именно там был
+  # найден дефект классификации пакетов данных (эксперимент E3).
+  fork:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: net-core/wireguard-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      # Не ./... : в корне форка лежит пакет main отдельной утилиты
+      # wireguard-go, чей main.go собирается только под Unix. Под Windows
+      # `go build ./...` падает на нём с «function main is undeclared»,
+      # хотя нужные нам пакеты в порядке. Собираем ровно то, что используем.
+      - name: Build fork
+        run: go build ./device/ ./conn/ ./tun/
+
+      - name: Vet fork
+        run: go vet ./device/
+
+      - name: Test fork
+        run: go test ./device/

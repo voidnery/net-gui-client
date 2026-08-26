@@ -146,6 +146,7 @@ jobs:
           for pkg in ./cmd/net-cli; do
             name="$(basename "$pkg")"
             go build -trimpath \
+              -tags "with_wireguard,with_quic,with_gvisor" \
               -ldflags "-s -w -X main.Version=${VER}" \
               -o "dist/${name}.exe" "$pkg"
           done

@@ -23,6 +23,7 @@ import (
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
+	wgdevice "github.com/sagernet/wireguard-go/device"
 )
 
 // Теги аутбаундов внутри конфигурации ядра. Наружу не выставляются —
@@ -77,7 +78,7 @@ func BuildOptions(cfg Config) (option.Options, error) {
 		logLevel = "warn"
 	}
 
-	outbound, err := buildOutbound(cfg.Profile)
+	proxy, err := buildProxy(cfg.Profile)
 	if err != nil {
 		return option.Options{}, err
 	}
@@ -122,36 +123,12 @@ func BuildOptions(cfg Config) (option.Options, error) {
 				SetSystemProxy: false,
 			},
 		}},
-		Outbounds: []option.Outbound{
-			outbound,
-			{Type: "direct", Tag: tagDirect, Options: &option.DirectOutboundOptions{}},
-		},
-		Route: buildRoute(cfg.Policy),
+		Outbounds: append(proxy.Outbounds,
+			option.Outbound{Type: "direct", Tag: tagDirect, Options: &option.DirectOutboundOptions{}},
+		),
+		Endpoints: proxy.Endpoints,
+		Route:     buildRoute(cfg.Policy),
 	}, nil
-}
-
-func buildOutbound(p profile.Profile) (option.Outbound, error) {
-	switch p.Kind {
-	case profile.KindSOCKS5:
-		return option.Outbound{
-			Type: "socks",
-			Tag:  tagProxy,
-			Options: &option.SOCKSOutboundOptions{
-				ServerOptions: option.ServerOptions{
-					Server:     p.Server,
-					ServerPort: p.Port,
-				},
-				Version:  "5",
-				Username: p.Username,
-				Password: p.Password,
-			},
-		}, nil
-	default:
-		// Validate() уже отсёк такие случаи; ветка оставлена, чтобы
-		// добавление типа в profile.Kind без правки транслятора
-		// приводило к явной ошибке, а не к молчаливому пропуску.
-		return option.Outbound{}, fmt.Errorf("corehost: транслятор не знает тип %q", p.Kind)
-	}
 }
 
 func buildRoute(p rules.Policy) *option.RouteOptions {
@@ -217,11 +194,34 @@ func Start(ctx context.Context, cfg Config) (*Core, error) {
 		return nil, err
 	}
 
-	// include.Context регистрирует реализации протоколов в контексте.
-	// Без этого ядро не знает ни одного типа inbound или outbound:
-	// sing-box использует контекст Go как контейнер внедрения зависимостей,
-	// а не глобальные синглтоны.
-	ctx = include.Context(ctx)
+	// Реестры протоколов кладутся в контекст: sing-box использует контекст
+	// Go как контейнер внедрения зависимостей, а не глобальные синглтоны.
+	// Именно поэтому в один процесс можно поместить несколько независимых
+	// экземпляров ядра.
+	//
+	// Параметры обфускации AmneziaWG передаются ядру через контекст.
+	//
+	// Способ выбран не от хорошей жизни: WireGuard-endpoint в sing-box не
+	// имеет поля для наших параметров, а подмена типов сообщений обязана
+	// происходить внутри сборки пакета — до вычисления MAC. Форк
+	// wireguard-go читает их из контекста тем же приёмом, каким сам
+	// wireguard-go читает оттуда остальные зависимости.
+	if w := cfg.Profile.WireGuard; w != nil && w.Obfuscation != nil {
+		o := w.Obfuscation
+		ctx = wgdevice.ContextWithAWGConfig(ctx, &wgdevice.AWGConfig{
+			Jc: o.Jc, Jmin: o.Jmin, Jmax: o.Jmax,
+			S1: o.S1, S2: o.S2,
+			H1: o.H1, H2: o.H2, H3: o.H3, H4: o.H4,
+		})
+	}
+
+	ctx = box.Context(ctx,
+		include.InboundRegistry(),
+		include.OutboundRegistry(),
+		include.EndpointRegistry(),
+		include.DNSTransportRegistry(),
+		include.ServiceRegistry(),
+	)
 
 	b, err := box.New(box.Options{Options: opts, Context: ctx})
 	if err != nil {

@@ -8,11 +8,21 @@ go 1.26
 //
 // replace github.com/sagernet/sing-box => ./net-core
 
+// net-core/wireguard-go — форк sagernet/wireguard-go с обфускацией AmneziaWG.
+//
+// Форк потребовался потому, что подмена типов сообщений H1–H4 обязана
+// происходить ДО вычисления MAC1: область покрытия MAC включает поле типа.
+// Снаружи библиотеки это неисполнимо. Дельта локализована в device/awg.go
+// и точечных правках device/send.go, receive.go, device.go.
+// Подробности — ADR-001, дополнение от 2026-08-26.
+replace github.com/sagernet/wireguard-go => ./net-core/wireguard-go
+
 require (
 	fyne.io/systray v1.12.2
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/sagernet/sing v0.8.13
 	github.com/sagernet/sing-box v1.13.19
+	github.com/sagernet/wireguard-go v0.0.4
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/sys v0.47.0
 	google.golang.org/grpc v1.83.1
@@ -139,7 +149,6 @@ require (
 	github.com/sagernet/sing-vmess v0.2.8-0.20250909125414-3aed155119a1 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
 	github.com/sagernet/tailscale v1.92.4-sing-box-1.13-mod.9 // indirect
-	github.com/sagernet/wireguard-go v0.0.4 // indirect
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 // indirect
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/tailscale/certstore v0.1.1-0.20231202035212-d3fa0460f47e // indirect
