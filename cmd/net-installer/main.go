@@ -46,9 +46,19 @@ const (
 var payload = []string{
 	"net-svc.exe",
 	"net-cli.exe",
-	// И-3: net-gui.exe
+	"net-gui.exe",
 	// И-5: wintun.dll (официальный подписанный, см. NOTICE)
 }
+
+// autostartKey — ключ автозапуска графического интерфейса.
+//
+// HKLM, а не HKCU: продукт устанавливается на машину, и агент в области
+// уведомлений должен подниматься у любого вошедшего пользователя. Иначе
+// уведомление об отказе всех узлов (требование T7) не дойдёт до того, кто
+// не запускал интерфейс вручную.
+const autostartKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
+
+const autostartValue = "net-gui-client"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -186,10 +196,13 @@ func install(args []string) error {
 		return fmt.Errorf("регистрация службы: %w", err)
 	}
 
-	// 5. Запись в «Программы и компоненты».
-	fmt.Println("[5/5] регистрация в списке установленных программ...")
+	// 5. Записи в реестре: список программ и автозапуск интерфейса.
+	fmt.Println("[5/5] регистрация в реестре...")
 	if err := writeUninstallEntry(target); err != nil {
-		return fmt.Errorf("запись в реестр: %w", err)
+		return fmt.Errorf("запись в список программ: %w", err)
+	}
+	if err := writeAutostart(target); err != nil {
+		return fmt.Errorf("настройка автозапуска интерфейса: %w", err)
 	}
 
 	// Запуск службы. Оставлять её остановленной — значит требовать от
@@ -242,9 +255,12 @@ func uninstall(args []string) error {
 	fmt.Println("[2/4] удаление файлов...")
 	deferred := removeTree(target)
 
-	fmt.Println("[3/4] удаление записи из списка программ...")
+	fmt.Println("[3/4] удаление записей из реестра...")
 	if err := registry.DeleteKey(registry.LOCAL_MACHINE, registryKey); err != nil {
-		fmt.Printf("      предупреждение: %v\n", err)
+		fmt.Printf("      предупреждение: список программ: %v\n", err)
+	}
+	if err := removeAutostart(); err != nil {
+		fmt.Printf("      предупреждение: автозапуск: %v\n", err)
 	}
 
 	dataDir := filepath.Join(os.Getenv("ProgramData"), productName)
@@ -452,6 +468,39 @@ func copyFile(src, dst string) error {
 	// Sync до закрытия: без него данные могут остаться в кэше ОС,
 	// и внезапное отключение питания оставит обрезанный исполняемый файл.
 	return out.Sync()
+}
+
+// writeAutostart включает автозапуск графического интерфейса при входе
+// пользователя в систему.
+//
+// Зачем это обязательно, а не «удобная опция»: служба работает в сеансе 0 и
+// не может показать окно. Уведомление об отказе всех узлов (требование T7)
+// доходит до пользователя только через процесс в его сеансе. Без автозапуска
+// оно не дошло бы до того, кто не открывал интерфейс вручную.
+func writeAutostart(target string) error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, autostartKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	exe := filepath.Join(target, "net-gui.exe")
+	return k.SetStringValue(autostartValue, fmt.Sprintf(`"%s"`, exe))
+}
+
+// removeAutostart убирает запись автозапуска.
+func removeAutostart() error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, autostartKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	err = k.DeleteValue(autostartValue)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil // записи не было — не ошибка
+	}
+	return err
 }
 
 // writeUninstallEntry регистрирует продукт в «Программах и компонентах».

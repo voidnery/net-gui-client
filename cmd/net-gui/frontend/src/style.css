@@ -1,0 +1,54 @@
+/*
+ * Базовые стили.
+ *
+ * ⚠️ Оформление намеренно минимальное: визуальный дизайн прорабатывается
+ * отдельной итерацией. Здесь только то, без чего интерфейс нечитаем —
+ * шрифт, размеры, поддержка светлой и тёмной темы системы.
+ */
+
+:root {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --fg: #e8e8e8;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+#app {
+  height: 100%;
+}
+
+code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.95em;
+}
+
+button,
+select {
+  color: inherit;
+  background: rgba(128, 128, 128, 0.12);
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 4px;
+}

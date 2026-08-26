@@ -1,0 +1,30 @@
+{
+  "name": "net-gui-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "//": [
+    "Vite закреплён на 7.x намеренно.",
+    "Шаблон Wails v2.15 просит vite ^8, но @sveltejs/vite-plugin-svelte@6",
+    "поддерживает только ^6.3 || ^7 — набор зависимостей шаблона внутренне",
+    "противоречив, и npm install падает на разрешении peer-зависимостей.",
+    "Решение флагом --legacy-peer-deps не годится: wails build вызывает",
+    "npm install сам, без флагов, и сборка ломалась бы в CI."
+  ],
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.0.0",
+    "@tsconfig/svelte": "^5.0.0",
+    "svelte": "^5.55.7",
+    "svelte-check": "^4.0.0",
+    "svelte-preprocess": "^6.0.3",
+    "tslib": "^2.4.0",
+    "typescript": "^5.6.3",
+    "vite": "^7.0.0"
+  }
+}
