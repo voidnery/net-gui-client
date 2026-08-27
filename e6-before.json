@@ -1,0 +1,189 @@
+{
+  "takenAt": "2026-08-26T18:15:22.7986733+03:00",
+  "adapters": [
+    {
+      "name": "vEthernet (DefaultVirtLan)",
+      "index": 9,
+      "status": "Up",
+      "mtu": 1500
+    },
+    {
+      "name": "Ethernet 4",
+      "index": 11,
+      "status": "Up",
+      "mtu": 1500
+    },
+    {
+      "name": "vEthernet (Default Switch)",
+      "index": 15,
+      "status": "Up",
+      "mtu": 1500
+    }
+  ],
+  "routes": [
+    {
+      "destination": "0.0.0.0/0",
+      "nextHop": "192.168.200.1",
+      "index": 9,
+      "metric": 0
+    },
+    {
+      "destination": "127.0.0.0/8",
+      "nextHop": "0.0.0.0",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "127.0.0.1/32",
+      "nextHop": "0.0.0.0",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "127.255.255.255/32",
+      "nextHop": "0.0.0.0",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "172.29.160.0/20",
+      "nextHop": "0.0.0.0",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "172.29.160.1/32",
+      "nextHop": "0.0.0.0",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "172.29.175.255/32",
+      "nextHop": "0.0.0.0",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "192.168.200.0/24",
+      "nextHop": "0.0.0.0",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "192.168.200.110/32",
+      "nextHop": "0.0.0.0",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "192.168.200.255/32",
+      "nextHop": "0.0.0.0",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "224.0.0.0/4",
+      "nextHop": "0.0.0.0",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "224.0.0.0/4",
+      "nextHop": "0.0.0.0",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "224.0.0.0/4",
+      "nextHop": "0.0.0.0",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "255.255.255.255/32",
+      "nextHop": "0.0.0.0",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "255.255.255.255/32",
+      "nextHop": "0.0.0.0",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "255.255.255.255/32",
+      "nextHop": "0.0.0.0",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "::/0",
+      "nextHop": "fe80::200:5eff:fe00:1c8",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "::/0",
+      "nextHop": "fe80::d601:c3ff:fe35:b13c",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "::/0",
+      "nextHop": "fe80::d601:c3ff:fe35:b15f",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "::1/128",
+      "nextHop": "::",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "fe80::/64",
+      "nextHop": "::",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "fe80::/64",
+      "nextHop": "::",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "fe80::5b29:2343:2d9f:7064/128",
+      "nextHop": "::",
+      "index": 9,
+      "metric": 256
+    },
+    {
+      "destination": "fe80::f829:ae34:5a32:9796/128",
+      "nextHop": "::",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "ff00::/8",
+      "nextHop": "::",
+      "index": 1,
+      "metric": 256
+    },
+    {
+      "destination": "ff00::/8",
+      "nextHop": "::",
+      "index": 15,
+      "metric": 256
+    },
+    {
+      "destination": "ff00::/8",
+      "nextHop": "::",
+      "index": 9,
+      "metric": 256
+    }
+  ],
+  "internet": true,
+  "exitIp": "31.28.6.149"
+}

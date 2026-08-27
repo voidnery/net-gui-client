@@ -64,6 +64,13 @@ func newApp(ctx context.Context, log logger) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Профили, которые не удалось расшифровать, не отменяют запуск, но обязаны
+	// быть названы: иначе они просто исчезнут из списка, и пользователь решит,
+	// что приложение потеряло его настройки. Самая частая причина — файл
+	// перенесён с другой машины, а ключ DPAPI принадлежит машине (мера S6).
+	for _, e := range profiles.LoadErrors() {
+		log.Warn("%v", e)
+	}
 
 	manager := session.NewManager(ctx)
 

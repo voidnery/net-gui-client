@@ -68,6 +68,15 @@ type TLSParams struct {
 	// Pin — SHA-256 отпечаток сертификата в шестнадцатеричном виде.
 	// Заданный отпечаток проверяется даже при Insecure.
 	Pin string `json:"pin,omitempty"`
+
+	// Fingerprint — отпечаток клиента TLS (uTLS): chrome, firefox, safari
+	// и подобные. Подменяет ClientHello так, чтобы он выглядел как у
+	// обычного браузера.
+	//
+	// Для REALITY это не украшение, а обязательное условие: маскировка
+	// строится на неотличимости рукопожатия от браузерного. В ссылках
+	// приходит параметром fp.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Hysteria2Params — параметры Hysteria2.
@@ -213,22 +222,88 @@ func (p Profile) validateWireGuard() error {
 	return nil
 }
 
+// clone возвращает копию профиля, безопасную для изменения.
+//
+// Вложенные параметры хранятся указателями, поэтому простое присваивание
+// структуры скопировало бы указатели, а не значения: правка «копии» изменила
+// бы оригинал. Для преобразования секретов это означало бы затирание ключа в
+// исходном профиле — незаметное до первой попытки подключиться.
+func (p Profile) clone() Profile {
+	out := p
+
+	if p.TLS != nil {
+		t := *p.TLS
+		t.ALPN = append([]string(nil), p.TLS.ALPN...)
+		out.TLS = &t
+	}
+	if p.Hysteria2 != nil {
+		h := *p.Hysteria2
+		out.Hysteria2 = &h
+	}
+	if p.WireGuard != nil {
+		w := *p.WireGuard
+		w.Address = append([]netip.Prefix(nil), p.WireGuard.Address...)
+		w.AllowedIPs = append([]netip.Prefix(nil), p.WireGuard.AllowedIPs...)
+		w.DNS = append([]string(nil), p.WireGuard.DNS...)
+		if p.WireGuard.Obfuscation != nil {
+			o := *p.WireGuard.Obfuscation
+			w.Obfuscation = &o
+		}
+		out.WireGuard = &w
+	}
+	if p.VLESS != nil {
+		v := *p.VLESS
+		if p.VLESS.Reality != nil {
+			r := *p.VLESS.Reality
+			v.Reality = &r
+		}
+		out.VLESS = &v
+	}
+	return out
+}
+
+// secretFields возвращает указатели на секретные поля профиля.
+//
+// Единственное перечисление секретов в пакете. От него зависят Secrets,
+// Redacted и TransformSecrets — раньше список был продублирован в каждой, и
+// добавление нового поля с секретом требовало вспомнить про все три. Забытая
+// копия не ломает сборку и не роняет тесты: секрет просто перестаёт
+// маскироваться и шифроваться, оставаясь на диске и в журнале открытым.
+//
+// ⚠️ Добавляя поле с секретом, вносите его сюда — и только сюда.
+func (p *Profile) secretFields() []*string {
+	out := []*string{&p.Password}
+
+	if p.WireGuard != nil {
+		out = append(out, &p.WireGuard.PrivateKey, &p.WireGuard.PresharedKey)
+	}
+	if p.Hysteria2 != nil {
+		out = append(out, &p.Hysteria2.ObfsPassword)
+	}
+	if p.VLESS != nil {
+		out = append(out, &p.VLESS.UUID)
+	}
+	return out
+}
+
+// Secrets перечисляет непустые секретные значения профиля.
+//
+// Хранилище профилей передаёт результат в реестр маскирования
+// (мера S7, internal/secretlog).
+func (p Profile) Secrets() []string {
+	var out []string
+	for _, f := range p.secretFields() {
+		if *f != "" {
+			out = append(out, *f)
+		}
+	}
+	return out
+}
+
 // HasSecrets сообщает, содержит ли профиль значения, которые нельзя
 // показывать и записывать в журнал (мера S7).
 func (p Profile) HasSecrets() bool {
-	if p.Password != "" {
-		return true
-	}
-	if p.WireGuard != nil && (p.WireGuard.PrivateKey != "" || p.WireGuard.PresharedKey != "") {
-		return true
-	}
-	if p.Hysteria2 != nil && p.Hysteria2.ObfsPassword != "" {
-		return true
-	}
-	if p.VLESS != nil && p.VLESS.UUID != "" {
-		return true
-	}
-	return false
+	return len(p.Secrets()) > 0
 }
 
 // Redacted возвращает копию профиля с вырезанными секретами.
@@ -237,37 +312,36 @@ func (p Profile) HasSecrets() bool {
 // делается ПРИ ЗАПИСИ, а не при экспорте — иначе секрет уже лежит на диске,
 // и любой сбой экспорта оставляет его доступным.
 func (p Profile) Redacted() Profile {
-	const mask = "***"
-
-	out := p
-	if out.Password != "" {
-		out.Password = mask
-	}
-	if out.WireGuard != nil {
-		w := *out.WireGuard
-		if w.PrivateKey != "" {
-			w.PrivateKey = mask
+	out := p.clone()
+	for _, f := range out.secretFields() {
+		if *f != "" {
+			*f = "***"
 		}
-		if w.PresharedKey != "" {
-			w.PresharedKey = mask
-		}
-		out.WireGuard = &w
-	}
-	if out.Hysteria2 != nil {
-		h := *out.Hysteria2
-		if h.ObfsPassword != "" {
-			h.ObfsPassword = mask
-		}
-		out.Hysteria2 = &h
-	}
-	if out.VLESS != nil {
-		v := *out.VLESS
-		if v.UUID != "" {
-			v.UUID = mask
-		}
-		out.VLESS = &v
 	}
 	return out
+}
+
+// TransformSecrets возвращает копию профиля, в которой каждое НЕПУСТОЕ
+// секретное поле заменено результатом fn.
+//
+// Используется хранилищем для шифрования секретов при записи на диск и
+// расшифровки при чтении (мера S6). Пустые поля не трогаются: шифровать
+// отсутствующее значение бессмысленно, а получившийся непустой шифротекст
+// сделал бы «пароля нет» неотличимым от «пароль есть».
+func (p Profile) TransformSecrets(fn func(string) (string, error)) (Profile, error) {
+	out := p.clone()
+
+	for _, f := range out.secretFields() {
+		if *f == "" {
+			continue
+		}
+		v, err := fn(*f)
+		if err != nil {
+			return Profile{}, fmt.Errorf("profile %q: преобразование секрета: %w", p.ID, err)
+		}
+		*f = v
+	}
+	return out, nil
 }
 
 func isPlausibleHost(s string) bool {

@@ -121,6 +121,25 @@ func (c *Client) PutProfile(ctx context.Context, p *pb.Profile) (*pb.Profile, er
 	return resp.GetProfile(), nil
 }
 
+// ImportProfile создаёт профиль из ссылки или файла конфигурации.
+//
+// Содержимое передаётся неразобранным: разбор выполняет служба. Это не
+// перекладывание работы, а следствие двух правил сразу — секреты не должны
+// возвращаться клиенту (мера S6), а недоверенный ввод проверяется службой
+// (мера S3). Подробности — ADR-004, дополнение от 26.08.2026.
+func (c *Client) ImportProfile(ctx context.Context, id, name, content string) (*pb.Profile, error) {
+	ctx, cancel := withTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	resp, err := c.profiles.Import(ctx, &pb.ImportProfileRequest{
+		Id: id, Name: name, Content: content,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetProfile(), nil
+}
+
 // RemoveProfile удаляет профиль.
 func (c *Client) RemoveProfile(ctx context.Context, id string) error {
 	ctx, cancel := withTimeout(ctx, 10*time.Second)
@@ -133,12 +152,12 @@ func (c *Client) RemoveProfile(ctx context.Context, id string) error {
 // --- SessionService ----------------------------------------------------------
 
 // Connect поднимает сессию по указанному профилю.
-func (c *Client) Connect(ctx context.Context, profileID string, policy *pb.Policy, listenPort uint32) (*pb.Status, error) {
+func (c *Client) Connect(ctx context.Context, profileID string, policy *pb.Policy, listenPort uint32, mode pb.Mode) (*pb.Status, error) {
 	ctx, cancel := withTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	return c.sessions.Connect(ctx, &pb.ConnectRequest{
-		ProfileId: profileID, Policy: policy, ListenPort: listenPort,
+		ProfileId: profileID, Policy: policy, ListenPort: listenPort, Mode: mode,
 	})
 }
 

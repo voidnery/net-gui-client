@@ -10,7 +10,7 @@
    * применена. Поэтому на экране нет ни одного элемента без подписи.
    */
   import { t } from '../i18n.svelte';
-  import type { StatusView, ProfileView } from '../types';
+  import { MODES, type StatusView, type ProfileView, type Mode } from '../types';
 
   let {
     status,
@@ -24,12 +24,18 @@
     profiles: ProfileView[];
     linked: boolean;
     busy: boolean;
-    onConnect: (profileId: string, policy: string) => void;
+    onConnect: (profileId: string, policy: string, mode: string) => void;
     onDisconnect: () => void;
   } = $props();
 
   let selectedProfile = $state('');
   let selectedPolicy = $state('all-except');
+
+  // Умолчание — прокси, а не туннель.
+  //
+  // Туннель меняет маршрутизацию всей системы. Делать это умолчанием значило
+  // бы менять поведение машины у того, кто просто нажал «Подключить».
+  let selectedMode = $state<Mode>('proxy');
 
   // Если профиль не выбран вручную, берём первый из списка.
   $effect(() => {
@@ -70,6 +76,18 @@
     </label>
 
     <label class="field">
+      <span class="label">{t('conn.mode')}</span>
+      <select bind:value={selectedMode} disabled={isConnected || !linked}>
+        {#each MODES as m (m)}
+          <option value={m}>{t('mode.' + m)}</option>
+        {/each}
+      </select>
+      {#if selectedMode === 'tunnel' && !isConnected}
+        <span class="warn-hint">{t('mode.tunnelHint')}</span>
+      {/if}
+    </label>
+
+    <label class="field">
       <span class="label">{t('conn.policy')}</span>
       <select bind:value={selectedPolicy} disabled={isConnected || !linked}>
         <option value="all-except">{t('policy.all-except')}</option>
@@ -80,7 +98,8 @@
     <button
       class="primary"
       disabled={!canAct}
-      onclick={() => (isConnected ? onDisconnect() : onConnect(selectedProfile, selectedPolicy))}
+      onclick={() =>
+        isConnected ? onDisconnect() : onConnect(selectedProfile, selectedPolicy, selectedMode)}
     >
       {isConnected ? t('action.disconnect') : t('action.connect')}
     </button>
@@ -88,6 +107,9 @@
 
   {#if isConnected}
     <dl class="details">
+      <dt>{t('conn.mode')}</dt>
+      <dd>{t('mode.' + status.mode)}</dd>
+
       <dt>{t('conn.listen')}</dt>
       <dd><code>{status.listen}</code></dd>
 
@@ -97,12 +119,16 @@
       <dt>{t('conn.rules')}</dt>
       <dd>{status.ruleCount}</dd>
     </dl>
-    <p class="hint">{t('conn.hint')}</p>
+    <p class="hint">{status.mode === 'tunnel' ? t('conn.hintTunnel') : t('conn.hint')}</p>
   {/if}
 </section>
 
 <style>
   /* Оформление намеренно черновое — визуальный дизайн отдельной итерацией. */
+  .warn-hint {
+    font-size: 0.78rem;
+    color: #b06000;
+  }
   .screen {
     display: flex;
     flex-direction: column;

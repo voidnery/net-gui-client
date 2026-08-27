@@ -37,7 +37,14 @@ type Kind int32
 
 const (
 	Kind_KIND_UNSPECIFIED Kind = 0
-	Kind_KIND_SOCKS5      Kind = 1 // И-4: KIND_VLESS, KIND_HYSTERIA2, KIND_AMNEZIAWG, KIND_TROJAN, ...
+	Kind_KIND_SOCKS5      Kind = 1
+	Kind_KIND_HYSTERIA2   Kind = 2
+	Kind_KIND_WIREGUARD   Kind = 3
+	// AmneziaWG отличается от WireGuard только набором параметров обфускации,
+	// но выделен отдельным значением намеренно: пользователю важно видеть в
+	// списке, какой из двух профилей замаскирован, а какой нет.
+	Kind_KIND_AMNEZIAWG Kind = 4
+	Kind_KIND_VLESS     Kind = 5 // Дальше: KIND_TROJAN, KIND_SHADOWSOCKS, KIND_TUIC
 )
 
 // Enum value maps for Kind.
@@ -45,10 +52,18 @@ var (
 	Kind_name = map[int32]string{
 		0: "KIND_UNSPECIFIED",
 		1: "KIND_SOCKS5",
+		2: "KIND_HYSTERIA2",
+		3: "KIND_WIREGUARD",
+		4: "KIND_AMNEZIAWG",
+		5: "KIND_VLESS",
 	}
 	Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED": 0,
 		"KIND_SOCKS5":      1,
+		"KIND_HYSTERIA2":   2,
+		"KIND_WIREGUARD":   3,
+		"KIND_AMNEZIAWG":   4,
+		"KIND_VLESS":       5,
 	}
 )
 
@@ -185,6 +200,67 @@ func (SessionState) EnumDescriptor() ([]byte, []int) {
 	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{2}
 }
 
+// Режим работы соединения.
+//
+// Из трёх режимов задания здесь два. Системный прокси — не отдельный способ
+// передачи трафика, а лишь настройка Windows поверх режима «прокси»;
+// он появится в И-11 и получит своё значение.
+type Mode int32
+
+const (
+	Mode_MODE_UNSPECIFIED Mode = 0
+	// MODE_PROXY — локальный прокси. Приложения направляются на него вручную.
+	// Умолчание: пустое значение означает именно его, поэтому старый клиент,
+	// не знающий о режимах, продолжает работать как прежде.
+	Mode_MODE_PROXY Mode = 1
+	// MODE_TUNNEL — сетевой адаптер TUN: весь трафик системы идёт через
+	// туннель без настройки отдельных приложений.
+	//
+	// ⚠️ Требует прав администратора у СЛУЖБЫ, а не у клиента.
+	Mode_MODE_TUNNEL Mode = 2
+)
+
+// Enum value maps for Mode.
+var (
+	Mode_name = map[int32]string{
+		0: "MODE_UNSPECIFIED",
+		1: "MODE_PROXY",
+		2: "MODE_TUNNEL",
+	}
+	Mode_value = map[string]int32{
+		"MODE_UNSPECIFIED": 0,
+		"MODE_PROXY":       1,
+		"MODE_TUNNEL":      2,
+	}
+)
+
+func (x Mode) Enum() *Mode {
+	p := new(Mode)
+	*p = x
+	return p
+}
+
+func (x Mode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Mode) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_netgui_v1_netgui_proto_enumTypes[3].Descriptor()
+}
+
+func (Mode) Type() protoreflect.EnumType {
+	return &file_proto_netgui_v1_netgui_proto_enumTypes[3]
+}
+
+func (x Mode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Mode.Descriptor instead.
+func (Mode) EnumDescriptor() ([]byte, []int) {
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{3}
+}
+
 // Профиль подключения — декларативное описание пути наружу.
 //
 // ⚠️ Мера S3 (ADR-006): служба принимает ТОЛЬКО такое описание.
@@ -197,9 +273,21 @@ type Profile struct {
 	Server   string                 `protobuf:"bytes,4,opt,name=server,proto3" json:"server,omitempty"`
 	Port     uint32                 `protobuf:"varint,5,opt,name=port,proto3" json:"port,omitempty"` // проверяется на диапазон uint16 на стороне службы
 	Username string                 `protobuf:"bytes,6,opt,name=username,proto3" json:"username,omitempty"`
-	// ⚠️ Временно: в И-4 пароль переедет в защищённое хранилище (мера S6),
-	// а здесь останется только ссылка на секрет.
-	Password      string `protobuf:"bytes,7,opt,name=password,proto3" json:"password,omitempty"`
+	// password передаётся ТОЛЬКО в сторону службы.
+	//
+	// В ответах служба всегда возвращает пустую строку: секреты не покидают
+	// её (мера S6). Интерфейсу пароль не нужен — ему нужно знать, задан ли он,
+	// для чего есть has_secrets.
+	//
+	// При изменении существующего профиля пустое значение означает «оставить
+	// прежний секрет». Иначе редактирование имени стирало бы пароль: клиент
+	// не может прислать то, чего никогда не получал.
+	Password string `protobuf:"bytes,7,opt,name=password,proto3" json:"password,omitempty"`
+	// has_secrets сообщает, задан ли у профиля секрет.
+	//
+	// Заполняется службой в ответах. Позволяет показать «пароль задан»,
+	// не передавая самого пароля.
+	HasSecrets    bool `protobuf:"varint,8,opt,name=has_secrets,json=hasSecrets,proto3" json:"has_secrets,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -281,6 +369,13 @@ func (x *Profile) GetPassword() string {
 		return x.Password
 	}
 	return ""
+}
+
+func (x *Profile) GetHasSecrets() bool {
+	if x != nil {
+		return x.HasSecrets
+	}
+	return false
 }
 
 // Предикат соединения. Пустой матчер недопустим.
@@ -460,6 +555,10 @@ type Status struct {
 	ListenAddress string                 `protobuf:"bytes,3,opt,name=listen_address,json=listenAddress,proto3" json:"listen_address,omitempty"` // "127.0.0.1:1080"
 	Policy        *Policy                `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`
 	Error         string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"` // непустое, если последняя попытка не удалась
+	// Режим текущего соединения. Интерфейс обязан показывать его: «подключено»
+	// означает разное в режиме прокси и в режиме туннеля, и путать их — значит
+	// вводить пользователя в заблуждение относительно того, куда идёт трафик.
+	Mode          Mode `protobuf:"varint,6,opt,name=mode,proto3,enum=netgui.v1.Mode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -527,6 +626,13 @@ func (x *Status) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *Status) GetMode() Mode {
+	if x != nil {
+		return x.Mode
+	}
+	return Mode_MODE_UNSPECIFIED
 }
 
 type HelloRequest struct {
@@ -635,6 +741,118 @@ func (x *HelloResponse) GetApiVersion() uint32 {
 	return 0
 }
 
+type ImportProfileRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id пустой означает «выдать самостоятельно»: только служба знает, какие
+	// идентификаторы уже заняты. Графический интерфейс так и делает; net-cli
+	// задаёт идентификатор явно, потому что им же потом и пользуются в командах.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// name пустое означает «взять из содержимого»: в ссылках имя лежит во
+	// фрагменте после решётки.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// content — ссылка (vless://, hysteria2://, socks5://) либо текст файла
+	// конфигурации wg-quick. Тип определяется по содержимому, а не по имени
+	// файла: имя пользователь волен изменить, содержимое — нет.
+	Content       string `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ImportProfileRequest) Reset() {
+	*x = ImportProfileRequest{}
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImportProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImportProfileRequest) ProtoMessage() {}
+
+func (x *ImportProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImportProfileRequest.ProtoReflect.Descriptor instead.
+func (*ImportProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ImportProfileRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ImportProfileRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ImportProfileRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+type ImportProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *Profile               `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ImportProfileResponse) Reset() {
+	*x = ImportProfileResponse{}
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImportProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImportProfileResponse) ProtoMessage() {}
+
+func (x *ImportProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImportProfileResponse.ProtoReflect.Descriptor instead.
+func (*ImportProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ImportProfileResponse) GetProfile() *Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
 type ListProfilesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -643,7 +861,7 @@ type ListProfilesRequest struct {
 
 func (x *ListProfilesRequest) Reset() {
 	*x = ListProfilesRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[7]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -655,7 +873,7 @@ func (x *ListProfilesRequest) String() string {
 func (*ListProfilesRequest) ProtoMessage() {}
 
 func (x *ListProfilesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[7]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -668,7 +886,7 @@ func (x *ListProfilesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProfilesRequest.ProtoReflect.Descriptor instead.
 func (*ListProfilesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{7}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{9}
 }
 
 type ListProfilesResponse struct {
@@ -680,7 +898,7 @@ type ListProfilesResponse struct {
 
 func (x *ListProfilesResponse) Reset() {
 	*x = ListProfilesResponse{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[8]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -692,7 +910,7 @@ func (x *ListProfilesResponse) String() string {
 func (*ListProfilesResponse) ProtoMessage() {}
 
 func (x *ListProfilesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[8]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -705,7 +923,7 @@ func (x *ListProfilesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProfilesResponse.ProtoReflect.Descriptor instead.
 func (*ListProfilesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{8}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListProfilesResponse) GetProfiles() []*Profile {
@@ -725,7 +943,7 @@ type PutProfileRequest struct {
 
 func (x *PutProfileRequest) Reset() {
 	*x = PutProfileRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[9]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -737,7 +955,7 @@ func (x *PutProfileRequest) String() string {
 func (*PutProfileRequest) ProtoMessage() {}
 
 func (x *PutProfileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[9]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -750,7 +968,7 @@ func (x *PutProfileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutProfileRequest.ProtoReflect.Descriptor instead.
 func (*PutProfileRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{9}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PutProfileRequest) GetProfile() *Profile {
@@ -769,7 +987,7 @@ type PutProfileResponse struct {
 
 func (x *PutProfileResponse) Reset() {
 	*x = PutProfileResponse{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[10]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +999,7 @@ func (x *PutProfileResponse) String() string {
 func (*PutProfileResponse) ProtoMessage() {}
 
 func (x *PutProfileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[10]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +1012,7 @@ func (x *PutProfileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutProfileResponse.ProtoReflect.Descriptor instead.
 func (*PutProfileResponse) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{10}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PutProfileResponse) GetProfile() *Profile {
@@ -813,7 +1031,7 @@ type RemoveProfileRequest struct {
 
 func (x *RemoveProfileRequest) Reset() {
 	*x = RemoveProfileRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[11]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -825,7 +1043,7 @@ func (x *RemoveProfileRequest) String() string {
 func (*RemoveProfileRequest) ProtoMessage() {}
 
 func (x *RemoveProfileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[11]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -838,7 +1056,7 @@ func (x *RemoveProfileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveProfileRequest.ProtoReflect.Descriptor instead.
 func (*RemoveProfileRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{11}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RemoveProfileRequest) GetId() string {
@@ -856,7 +1074,7 @@ type RemoveProfileResponse struct {
 
 func (x *RemoveProfileResponse) Reset() {
 	*x = RemoveProfileResponse{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[12]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -868,7 +1086,7 @@ func (x *RemoveProfileResponse) String() string {
 func (*RemoveProfileResponse) ProtoMessage() {}
 
 func (x *RemoveProfileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[12]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -881,7 +1099,7 @@ func (x *RemoveProfileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveProfileResponse.ProtoReflect.Descriptor instead.
 func (*RemoveProfileResponse) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{12}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{14}
 }
 
 type ConnectRequest struct {
@@ -889,14 +1107,17 @@ type ConnectRequest struct {
 	ProfileId string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
 	Policy    *Policy                `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
 	// Порт локального inbound. 0 — выбрать свободный автоматически.
-	ListenPort    uint32 `protobuf:"varint,3,opt,name=listen_port,json=listenPort,proto3" json:"listen_port,omitempty"`
+	ListenPort uint32 `protobuf:"varint,3,opt,name=listen_port,json=listenPort,proto3" json:"listen_port,omitempty"`
+	// Режим. MODE_UNSPECIFIED означает MODE_PROXY: клиент, собранный до
+	// появления режимов, продолжает работать без изменений.
+	Mode          Mode `protobuf:"varint,4,opt,name=mode,proto3,enum=netgui.v1.Mode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ConnectRequest) Reset() {
 	*x = ConnectRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[13]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -908,7 +1129,7 @@ func (x *ConnectRequest) String() string {
 func (*ConnectRequest) ProtoMessage() {}
 
 func (x *ConnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[13]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -921,7 +1142,7 @@ func (x *ConnectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectRequest.ProtoReflect.Descriptor instead.
 func (*ConnectRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{13}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ConnectRequest) GetProfileId() string {
@@ -945,6 +1166,13 @@ func (x *ConnectRequest) GetListenPort() uint32 {
 	return 0
 }
 
+func (x *ConnectRequest) GetMode() Mode {
+	if x != nil {
+		return x.Mode
+	}
+	return Mode_MODE_UNSPECIFIED
+}
+
 type DisconnectRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -953,7 +1181,7 @@ type DisconnectRequest struct {
 
 func (x *DisconnectRequest) Reset() {
 	*x = DisconnectRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[14]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -965,7 +1193,7 @@ func (x *DisconnectRequest) String() string {
 func (*DisconnectRequest) ProtoMessage() {}
 
 func (x *DisconnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[14]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -978,7 +1206,7 @@ func (x *DisconnectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisconnectRequest.ProtoReflect.Descriptor instead.
 func (*DisconnectRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{14}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{16}
 }
 
 type GetStatusRequest struct {
@@ -989,7 +1217,7 @@ type GetStatusRequest struct {
 
 func (x *GetStatusRequest) Reset() {
 	*x = GetStatusRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[15]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1001,7 +1229,7 @@ func (x *GetStatusRequest) String() string {
 func (*GetStatusRequest) ProtoMessage() {}
 
 func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[15]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1014,7 +1242,7 @@ func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetStatusRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{15}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{17}
 }
 
 type SubscribeRequest struct {
@@ -1025,7 +1253,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[16]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1037,7 +1265,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[16]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1050,7 +1278,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{16}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{18}
 }
 
 type Event struct {
@@ -1066,7 +1294,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[17]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1078,7 +1306,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[17]
+	mi := &file_proto_netgui_v1_netgui_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1091,7 +1319,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{17}
+	return file_proto_netgui_v1_netgui_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Event) GetUnixNano() int64 {
@@ -1131,7 +1359,7 @@ var File_proto_netgui_v1_netgui_proto protoreflect.FileDescriptor
 
 const file_proto_netgui_v1_netgui_proto_rawDesc = "" +
 	"\n" +
-	"\x1cproto/netgui/v1/netgui.proto\x12\tnetgui.v1\"\xb6\x01\n" +
+	"\x1cproto/netgui/v1/netgui.proto\x12\tnetgui.v1\"\xd7\x01\n" +
 	"\aProfile\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12#\n" +
@@ -1139,7 +1367,9 @@ const file_proto_netgui_v1_netgui_proto_rawDesc = "" +
 	"\x06server\x18\x04 \x01(\tR\x06server\x12\x12\n" +
 	"\x04port\x18\x05 \x01(\rR\x04port\x12\x1a\n" +
 	"\busername\x18\x06 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\a \x01(\tR\bpassword\"_\n" +
+	"\bpassword\x18\a \x01(\tR\bpassword\x12\x1f\n" +
+	"\vhas_secrets\x18\b \x01(\bR\n" +
+	"hasSecrets\"_\n" +
 	"\aMatcher\x12\x16\n" +
 	"\x06domain\x18\x01 \x03(\tR\x06domain\x12#\n" +
 	"\rdomain_suffix\x18\x02 \x03(\tR\fdomainSuffix\x12\x17\n" +
@@ -1149,14 +1379,15 @@ const file_proto_netgui_v1_netgui_proto_rawDesc = "" +
 	"\x06action\x18\x02 \x01(\x0e2\x11.netgui.v1.ActionR\x06action\"i\n" +
 	"\x06Policy\x128\n" +
 	"\x0edefault_action\x18\x01 \x01(\x0e2\x11.netgui.v1.ActionR\rdefaultAction\x12%\n" +
-	"\x05rules\x18\x02 \x03(\v2\x0f.netgui.v1.RuleR\x05rules\"\xbe\x01\n" +
+	"\x05rules\x18\x02 \x03(\v2\x0f.netgui.v1.RuleR\x05rules\"\xe3\x01\n" +
 	"\x06Status\x12-\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x17.netgui.v1.SessionStateR\x05state\x12\x1d\n" +
 	"\n" +
 	"profile_id\x18\x02 \x01(\tR\tprofileId\x12%\n" +
 	"\x0elisten_address\x18\x03 \x01(\tR\rlistenAddress\x12)\n" +
 	"\x06policy\x18\x04 \x01(\v2\x11.netgui.v1.PolicyR\x06policy\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\"V\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x12#\n" +
+	"\x04mode\x18\x06 \x01(\x0e2\x0f.netgui.v1.ModeR\x04mode\"V\n" +
 	"\fHelloRequest\x12\x1f\n" +
 	"\vclient_name\x18\x01 \x01(\tR\n" +
 	"clientName\x12%\n" +
@@ -1164,7 +1395,13 @@ const file_proto_netgui_v1_netgui_proto_rawDesc = "" +
 	"\rHelloResponse\x12%\n" +
 	"\x0eserver_version\x18\x01 \x01(\tR\rserverVersion\x12\x1f\n" +
 	"\vapi_version\x18\x02 \x01(\rR\n" +
-	"apiVersion\"\x15\n" +
+	"apiVersion\"T\n" +
+	"\x14ImportProfileRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\"E\n" +
+	"\x15ImportProfileResponse\x12,\n" +
+	"\aprofile\x18\x01 \x01(\v2\x12.netgui.v1.ProfileR\aprofile\"\x15\n" +
 	"\x13ListProfilesRequest\"F\n" +
 	"\x14ListProfilesResponse\x12.\n" +
 	"\bprofiles\x18\x01 \x03(\v2\x12.netgui.v1.ProfileR\bprofiles\"A\n" +
@@ -1174,23 +1411,29 @@ const file_proto_netgui_v1_netgui_proto_rawDesc = "" +
 	"\aprofile\x18\x01 \x01(\v2\x12.netgui.v1.ProfileR\aprofile\"&\n" +
 	"\x14RemoveProfileRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x17\n" +
-	"\x15RemoveProfileResponse\"{\n" +
+	"\x15RemoveProfileResponse\"\xa0\x01\n" +
 	"\x0eConnectRequest\x12\x1d\n" +
 	"\n" +
 	"profile_id\x18\x01 \x01(\tR\tprofileId\x12)\n" +
 	"\x06policy\x18\x02 \x01(\v2\x11.netgui.v1.PolicyR\x06policy\x12\x1f\n" +
 	"\vlisten_port\x18\x03 \x01(\rR\n" +
-	"listenPort\"\x13\n" +
+	"listenPort\x12#\n" +
+	"\x04mode\x18\x04 \x01(\x0e2\x0f.netgui.v1.ModeR\x04mode\"\x13\n" +
 	"\x11DisconnectRequest\"\x12\n" +
 	"\x10GetStatusRequest\"\x12\n" +
 	"\x10SubscribeRequest\"k\n" +
 	"\x05Event\x12\x1b\n" +
 	"\tunix_nano\x18\x01 \x01(\x03R\bunixNano\x12:\n" +
 	"\x0estatus_changed\x18\x02 \x01(\v2\x11.netgui.v1.StatusH\x00R\rstatusChangedB\t\n" +
-	"\apayload*-\n" +
+	"\apayload*y\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0f\n" +
-	"\vKIND_SOCKS5\x10\x01*W\n" +
+	"\vKIND_SOCKS5\x10\x01\x12\x12\n" +
+	"\x0eKIND_HYSTERIA2\x10\x02\x12\x12\n" +
+	"\x0eKIND_WIREGUARD\x10\x03\x12\x12\n" +
+	"\x0eKIND_AMNEZIAWG\x10\x04\x12\x0e\n" +
+	"\n" +
+	"KIND_VLESS\x10\x05*W\n" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fACTION_PROXY\x10\x01\x12\x11\n" +
@@ -1200,13 +1443,19 @@ const file_proto_netgui_v1_netgui_proto_rawDesc = "" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SESSION_STATE_IDLE\x10\x01\x12\x1c\n" +
 	"\x18SESSION_STATE_CONNECTING\x10\x02\x12\x1b\n" +
-	"\x17SESSION_STATE_CONNECTED\x10\x032L\n" +
+	"\x17SESSION_STATE_CONNECTED\x10\x03*=\n" +
+	"\x04Mode\x12\x14\n" +
+	"\x10MODE_UNSPECIFIED\x10\x00\x12\x0e\n" +
+	"\n" +
+	"MODE_PROXY\x10\x01\x12\x0f\n" +
+	"\vMODE_TUNNEL\x10\x022L\n" +
 	"\x0eControlService\x12:\n" +
-	"\x05Hello\x12\x17.netgui.v1.HelloRequest\x1a\x18.netgui.v1.HelloResponse2\xea\x01\n" +
+	"\x05Hello\x12\x17.netgui.v1.HelloRequest\x1a\x18.netgui.v1.HelloResponse2\xb7\x02\n" +
 	"\x0eProfileService\x12G\n" +
 	"\x04List\x12\x1e.netgui.v1.ListProfilesRequest\x1a\x1f.netgui.v1.ListProfilesResponse\x12B\n" +
 	"\x03Put\x12\x1c.netgui.v1.PutProfileRequest\x1a\x1d.netgui.v1.PutProfileResponse\x12K\n" +
-	"\x06Remove\x12\x1f.netgui.v1.RemoveProfileRequest\x1a .netgui.v1.RemoveProfileResponse2\xc5\x01\n" +
+	"\x06Remove\x12\x1f.netgui.v1.RemoveProfileRequest\x1a .netgui.v1.RemoveProfileResponse\x12K\n" +
+	"\x06Import\x12\x1f.netgui.v1.ImportProfileRequest\x1a .netgui.v1.ImportProfileResponse2\xc5\x01\n" +
 	"\x0eSessionService\x127\n" +
 	"\aConnect\x12\x19.netgui.v1.ConnectRequest\x1a\x11.netgui.v1.Status\x12=\n" +
 	"\n" +
@@ -1227,65 +1476,73 @@ func file_proto_netgui_v1_netgui_proto_rawDescGZIP() []byte {
 	return file_proto_netgui_v1_netgui_proto_rawDescData
 }
 
-var file_proto_netgui_v1_netgui_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_proto_netgui_v1_netgui_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_proto_netgui_v1_netgui_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_proto_netgui_v1_netgui_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_proto_netgui_v1_netgui_proto_goTypes = []any{
 	(Kind)(0),                     // 0: netgui.v1.Kind
 	(Action)(0),                   // 1: netgui.v1.Action
 	(SessionState)(0),             // 2: netgui.v1.SessionState
-	(*Profile)(nil),               // 3: netgui.v1.Profile
-	(*Matcher)(nil),               // 4: netgui.v1.Matcher
-	(*Rule)(nil),                  // 5: netgui.v1.Rule
-	(*Policy)(nil),                // 6: netgui.v1.Policy
-	(*Status)(nil),                // 7: netgui.v1.Status
-	(*HelloRequest)(nil),          // 8: netgui.v1.HelloRequest
-	(*HelloResponse)(nil),         // 9: netgui.v1.HelloResponse
-	(*ListProfilesRequest)(nil),   // 10: netgui.v1.ListProfilesRequest
-	(*ListProfilesResponse)(nil),  // 11: netgui.v1.ListProfilesResponse
-	(*PutProfileRequest)(nil),     // 12: netgui.v1.PutProfileRequest
-	(*PutProfileResponse)(nil),    // 13: netgui.v1.PutProfileResponse
-	(*RemoveProfileRequest)(nil),  // 14: netgui.v1.RemoveProfileRequest
-	(*RemoveProfileResponse)(nil), // 15: netgui.v1.RemoveProfileResponse
-	(*ConnectRequest)(nil),        // 16: netgui.v1.ConnectRequest
-	(*DisconnectRequest)(nil),     // 17: netgui.v1.DisconnectRequest
-	(*GetStatusRequest)(nil),      // 18: netgui.v1.GetStatusRequest
-	(*SubscribeRequest)(nil),      // 19: netgui.v1.SubscribeRequest
-	(*Event)(nil),                 // 20: netgui.v1.Event
+	(Mode)(0),                     // 3: netgui.v1.Mode
+	(*Profile)(nil),               // 4: netgui.v1.Profile
+	(*Matcher)(nil),               // 5: netgui.v1.Matcher
+	(*Rule)(nil),                  // 6: netgui.v1.Rule
+	(*Policy)(nil),                // 7: netgui.v1.Policy
+	(*Status)(nil),                // 8: netgui.v1.Status
+	(*HelloRequest)(nil),          // 9: netgui.v1.HelloRequest
+	(*HelloResponse)(nil),         // 10: netgui.v1.HelloResponse
+	(*ImportProfileRequest)(nil),  // 11: netgui.v1.ImportProfileRequest
+	(*ImportProfileResponse)(nil), // 12: netgui.v1.ImportProfileResponse
+	(*ListProfilesRequest)(nil),   // 13: netgui.v1.ListProfilesRequest
+	(*ListProfilesResponse)(nil),  // 14: netgui.v1.ListProfilesResponse
+	(*PutProfileRequest)(nil),     // 15: netgui.v1.PutProfileRequest
+	(*PutProfileResponse)(nil),    // 16: netgui.v1.PutProfileResponse
+	(*RemoveProfileRequest)(nil),  // 17: netgui.v1.RemoveProfileRequest
+	(*RemoveProfileResponse)(nil), // 18: netgui.v1.RemoveProfileResponse
+	(*ConnectRequest)(nil),        // 19: netgui.v1.ConnectRequest
+	(*DisconnectRequest)(nil),     // 20: netgui.v1.DisconnectRequest
+	(*GetStatusRequest)(nil),      // 21: netgui.v1.GetStatusRequest
+	(*SubscribeRequest)(nil),      // 22: netgui.v1.SubscribeRequest
+	(*Event)(nil),                 // 23: netgui.v1.Event
 }
 var file_proto_netgui_v1_netgui_proto_depIdxs = []int32{
 	0,  // 0: netgui.v1.Profile.kind:type_name -> netgui.v1.Kind
-	4,  // 1: netgui.v1.Rule.matcher:type_name -> netgui.v1.Matcher
+	5,  // 1: netgui.v1.Rule.matcher:type_name -> netgui.v1.Matcher
 	1,  // 2: netgui.v1.Rule.action:type_name -> netgui.v1.Action
 	1,  // 3: netgui.v1.Policy.default_action:type_name -> netgui.v1.Action
-	5,  // 4: netgui.v1.Policy.rules:type_name -> netgui.v1.Rule
+	6,  // 4: netgui.v1.Policy.rules:type_name -> netgui.v1.Rule
 	2,  // 5: netgui.v1.Status.state:type_name -> netgui.v1.SessionState
-	6,  // 6: netgui.v1.Status.policy:type_name -> netgui.v1.Policy
-	3,  // 7: netgui.v1.ListProfilesResponse.profiles:type_name -> netgui.v1.Profile
-	3,  // 8: netgui.v1.PutProfileRequest.profile:type_name -> netgui.v1.Profile
-	3,  // 9: netgui.v1.PutProfileResponse.profile:type_name -> netgui.v1.Profile
-	6,  // 10: netgui.v1.ConnectRequest.policy:type_name -> netgui.v1.Policy
-	7,  // 11: netgui.v1.Event.status_changed:type_name -> netgui.v1.Status
-	8,  // 12: netgui.v1.ControlService.Hello:input_type -> netgui.v1.HelloRequest
-	10, // 13: netgui.v1.ProfileService.List:input_type -> netgui.v1.ListProfilesRequest
-	12, // 14: netgui.v1.ProfileService.Put:input_type -> netgui.v1.PutProfileRequest
-	14, // 15: netgui.v1.ProfileService.Remove:input_type -> netgui.v1.RemoveProfileRequest
-	16, // 16: netgui.v1.SessionService.Connect:input_type -> netgui.v1.ConnectRequest
-	17, // 17: netgui.v1.SessionService.Disconnect:input_type -> netgui.v1.DisconnectRequest
-	18, // 18: netgui.v1.SessionService.GetStatus:input_type -> netgui.v1.GetStatusRequest
-	19, // 19: netgui.v1.EventService.Subscribe:input_type -> netgui.v1.SubscribeRequest
-	9,  // 20: netgui.v1.ControlService.Hello:output_type -> netgui.v1.HelloResponse
-	11, // 21: netgui.v1.ProfileService.List:output_type -> netgui.v1.ListProfilesResponse
-	13, // 22: netgui.v1.ProfileService.Put:output_type -> netgui.v1.PutProfileResponse
-	15, // 23: netgui.v1.ProfileService.Remove:output_type -> netgui.v1.RemoveProfileResponse
-	7,  // 24: netgui.v1.SessionService.Connect:output_type -> netgui.v1.Status
-	7,  // 25: netgui.v1.SessionService.Disconnect:output_type -> netgui.v1.Status
-	7,  // 26: netgui.v1.SessionService.GetStatus:output_type -> netgui.v1.Status
-	20, // 27: netgui.v1.EventService.Subscribe:output_type -> netgui.v1.Event
-	20, // [20:28] is the sub-list for method output_type
-	12, // [12:20] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	7,  // 6: netgui.v1.Status.policy:type_name -> netgui.v1.Policy
+	3,  // 7: netgui.v1.Status.mode:type_name -> netgui.v1.Mode
+	4,  // 8: netgui.v1.ImportProfileResponse.profile:type_name -> netgui.v1.Profile
+	4,  // 9: netgui.v1.ListProfilesResponse.profiles:type_name -> netgui.v1.Profile
+	4,  // 10: netgui.v1.PutProfileRequest.profile:type_name -> netgui.v1.Profile
+	4,  // 11: netgui.v1.PutProfileResponse.profile:type_name -> netgui.v1.Profile
+	7,  // 12: netgui.v1.ConnectRequest.policy:type_name -> netgui.v1.Policy
+	3,  // 13: netgui.v1.ConnectRequest.mode:type_name -> netgui.v1.Mode
+	8,  // 14: netgui.v1.Event.status_changed:type_name -> netgui.v1.Status
+	9,  // 15: netgui.v1.ControlService.Hello:input_type -> netgui.v1.HelloRequest
+	13, // 16: netgui.v1.ProfileService.List:input_type -> netgui.v1.ListProfilesRequest
+	15, // 17: netgui.v1.ProfileService.Put:input_type -> netgui.v1.PutProfileRequest
+	17, // 18: netgui.v1.ProfileService.Remove:input_type -> netgui.v1.RemoveProfileRequest
+	11, // 19: netgui.v1.ProfileService.Import:input_type -> netgui.v1.ImportProfileRequest
+	19, // 20: netgui.v1.SessionService.Connect:input_type -> netgui.v1.ConnectRequest
+	20, // 21: netgui.v1.SessionService.Disconnect:input_type -> netgui.v1.DisconnectRequest
+	21, // 22: netgui.v1.SessionService.GetStatus:input_type -> netgui.v1.GetStatusRequest
+	22, // 23: netgui.v1.EventService.Subscribe:input_type -> netgui.v1.SubscribeRequest
+	10, // 24: netgui.v1.ControlService.Hello:output_type -> netgui.v1.HelloResponse
+	14, // 25: netgui.v1.ProfileService.List:output_type -> netgui.v1.ListProfilesResponse
+	16, // 26: netgui.v1.ProfileService.Put:output_type -> netgui.v1.PutProfileResponse
+	18, // 27: netgui.v1.ProfileService.Remove:output_type -> netgui.v1.RemoveProfileResponse
+	12, // 28: netgui.v1.ProfileService.Import:output_type -> netgui.v1.ImportProfileResponse
+	8,  // 29: netgui.v1.SessionService.Connect:output_type -> netgui.v1.Status
+	8,  // 30: netgui.v1.SessionService.Disconnect:output_type -> netgui.v1.Status
+	8,  // 31: netgui.v1.SessionService.GetStatus:output_type -> netgui.v1.Status
+	23, // 32: netgui.v1.EventService.Subscribe:output_type -> netgui.v1.Event
+	24, // [24:33] is the sub-list for method output_type
+	15, // [15:24] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_proto_netgui_v1_netgui_proto_init() }
@@ -1293,7 +1550,7 @@ func file_proto_netgui_v1_netgui_proto_init() {
 	if File_proto_netgui_v1_netgui_proto != nil {
 		return
 	}
-	file_proto_netgui_v1_netgui_proto_msgTypes[17].OneofWrappers = []any{
+	file_proto_netgui_v1_netgui_proto_msgTypes[19].OneofWrappers = []any{
 		(*Event_StatusChanged)(nil),
 	}
 	type x struct{}
@@ -1301,8 +1558,8 @@ func file_proto_netgui_v1_netgui_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_netgui_v1_netgui_proto_rawDesc), len(file_proto_netgui_v1_netgui_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   18,
+			NumEnums:      4,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

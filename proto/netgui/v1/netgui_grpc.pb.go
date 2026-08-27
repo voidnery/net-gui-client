@@ -135,6 +135,7 @@ const (
 	ProfileService_List_FullMethodName   = "/netgui.v1.ProfileService/List"
 	ProfileService_Put_FullMethodName    = "/netgui.v1.ProfileService/Put"
 	ProfileService_Remove_FullMethodName = "/netgui.v1.ProfileService/Remove"
+	ProfileService_Import_FullMethodName = "/netgui.v1.ProfileService/Import"
 )
 
 // ProfileServiceClient is the client API for ProfileService service.
@@ -144,6 +145,21 @@ type ProfileServiceClient interface {
 	List(ctx context.Context, in *ListProfilesRequest, opts ...grpc.CallOption) (*ListProfilesResponse, error)
 	Put(ctx context.Context, in *PutProfileRequest, opts ...grpc.CallOption) (*PutProfileResponse, error)
 	Remove(ctx context.Context, in *RemoveProfileRequest, opts ...grpc.CallOption) (*RemoveProfileResponse, error)
+	// Import создаёт профиль из ссылки или файла конфигурации.
+	//
+	// Разбор выполняется службой, а не клиентом, по трём причинам.
+	//
+	// Во-первых, секреты движутся только в одну сторону: содержимое уходит в
+	// службу и обратно не возвращается (мера S6).
+	//
+	// Во-вторых, разбор — это недоверенный ввод, а по принципу P1 всякая
+	// проверка выполняется на стороне службы, включая ввод собственного
+	// интерфейса (мера S3).
+	//
+	// В-третьих, форматов много, и держать их разбор в каждом клиенте —
+	// net-cli, net-gui, будущем web UI — означало бы три расходящиеся
+	// реализации одного и того же.
+	Import(ctx context.Context, in *ImportProfileRequest, opts ...grpc.CallOption) (*ImportProfileResponse, error)
 }
 
 type profileServiceClient struct {
@@ -184,6 +200,16 @@ func (c *profileServiceClient) Remove(ctx context.Context, in *RemoveProfileRequ
 	return out, nil
 }
 
+func (c *profileServiceClient) Import(ctx context.Context, in *ImportProfileRequest, opts ...grpc.CallOption) (*ImportProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportProfileResponse)
+	err := c.cc.Invoke(ctx, ProfileService_Import_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProfileServiceServer is the server API for ProfileService service.
 // All implementations must embed UnimplementedProfileServiceServer
 // for forward compatibility.
@@ -191,6 +217,21 @@ type ProfileServiceServer interface {
 	List(context.Context, *ListProfilesRequest) (*ListProfilesResponse, error)
 	Put(context.Context, *PutProfileRequest) (*PutProfileResponse, error)
 	Remove(context.Context, *RemoveProfileRequest) (*RemoveProfileResponse, error)
+	// Import создаёт профиль из ссылки или файла конфигурации.
+	//
+	// Разбор выполняется службой, а не клиентом, по трём причинам.
+	//
+	// Во-первых, секреты движутся только в одну сторону: содержимое уходит в
+	// службу и обратно не возвращается (мера S6).
+	//
+	// Во-вторых, разбор — это недоверенный ввод, а по принципу P1 всякая
+	// проверка выполняется на стороне службы, включая ввод собственного
+	// интерфейса (мера S3).
+	//
+	// В-третьих, форматов много, и держать их разбор в каждом клиенте —
+	// net-cli, net-gui, будущем web UI — означало бы три расходящиеся
+	// реализации одного и того же.
+	Import(context.Context, *ImportProfileRequest) (*ImportProfileResponse, error)
 	mustEmbedUnimplementedProfileServiceServer()
 }
 
@@ -209,6 +250,9 @@ func (UnimplementedProfileServiceServer) Put(context.Context, *PutProfileRequest
 }
 func (UnimplementedProfileServiceServer) Remove(context.Context, *RemoveProfileRequest) (*RemoveProfileResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Remove not implemented")
+}
+func (UnimplementedProfileServiceServer) Import(context.Context, *ImportProfileRequest) (*ImportProfileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Import not implemented")
 }
 func (UnimplementedProfileServiceServer) mustEmbedUnimplementedProfileServiceServer() {}
 func (UnimplementedProfileServiceServer) testEmbeddedByValue()                        {}
@@ -285,6 +329,24 @@ func _ProfileService_Remove_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ProfileService_Import_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProfileServiceServer).Import(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProfileService_Import_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProfileServiceServer).Import(ctx, req.(*ImportProfileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ProfileService_ServiceDesc is the grpc.ServiceDesc for ProfileService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -303,6 +365,10 @@ var ProfileService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Remove",
 			Handler:    _ProfileService_Remove_Handler,
+		},
+		{
+			MethodName: "Import",
+			Handler:    _ProfileService_Import_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

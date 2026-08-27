@@ -18,10 +18,50 @@ export interface AppInfo {
 }
 
 /** Стабильные идентификаторы состояний. Перевод — в словаре i18n. */
-export type SessionState = 'idle' | 'connecting' | 'connected' | 'unlinked' | 'unknown';
+export const SESSION_STATES = ['idle', 'connecting', 'connected', 'unlinked', 'unknown'] as const;
+
+export type SessionState = (typeof SESSION_STATES)[number];
+
+/**
+ * Приводит состояние, пришедшее из Go, к известному значению.
+ *
+ * Wails описывает поле как string: контракт допускает, что служба окажется
+ * новее интерфейса и пришлёт состояние, о котором здесь ещё не знают.
+ * Приведение типом (`as SessionState`) эту возможность бы замолчало, и
+ * интерфейс попытался бы показать перевод несуществующего ключа.
+ *
+ * Неизвестное значение вырождается в 'unknown' — состояние, для которого
+ * подпись уже есть. Пользователь увидит «Неизвестно» вместо пустоты.
+ */
+export function asSessionState(s: string): SessionState {
+  return (SESSION_STATES as readonly string[]).includes(s) ? (s as SessionState) : 'unknown';
+}
+
+/** Приводит статус, пришедший из Go, к типу интерфейса. */
+export function toStatusView(
+  s: { state: string; mode: string } & Omit<StatusView, 'state' | 'mode'>,
+): StatusView {
+  return { ...s, state: asSessionState(s.state), mode: asMode(s.mode) };
+}
+
+/**
+ * Режим работы соединения.
+ *
+ * Различие существенное, и его нельзя прятать: в режиме прокси через туннель
+ * идут только приложения, направленные на локальный порт; в режиме туннеля —
+ * весь трафик системы.
+ */
+export const MODES = ['proxy', 'tunnel'] as const;
+
+export type Mode = (typeof MODES)[number];
+
+export function asMode(s: string): Mode {
+  return (MODES as readonly string[]).includes(s) ? (s as Mode) : 'proxy';
+}
 
 export interface StatusView {
   state: SessionState;
+  mode: Mode;
   profileId: string;
   listen: string;
   policy: string;
@@ -35,6 +75,21 @@ export interface ProfileView {
   kind: string;
   server: string;
   port: number;
+  /**
+   * Задан ли у профиля секрет.
+   *
+   * Самого секрета здесь нет и не будет: служба его не возвращает (мера S6).
+   * Интерфейсу достаточно признака — показать «пароль задан» и не предлагать
+   * подключаться профилем, у которого учётных данных нет вовсе.
+   */
+  hasSecrets: boolean;
+}
+
+/** Исход операции над профилем. Ошибка приходит значением, а не исключением. */
+export interface ProfileResult {
+  ok: boolean;
+  profile: string;
+  error: string;
 }
 
 /** Экраны приложения. Соответствуют карте навигации из 03-architecture.md §11.1. */

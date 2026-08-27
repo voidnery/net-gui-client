@@ -4,6 +4,9 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -283,7 +286,15 @@ func (a *app) GetAppInfo() AppInfo {
 
 // StatusView — состояние сессии в виде, удобном для интерфейса.
 type StatusView struct {
-	State     string `json:"state"`
+	State string `json:"state"`
+
+	// Mode — режим соединения: proxy | tunnel.
+	//
+	// Показывается пользователю всегда, когда сессия активна: «подключено»
+	// означает разное в двух режимах, и не различать их — значит скрывать от
+	// человека, куда идёт его трафик.
+	Mode string `json:"mode"`
+
 	ProfileID string `json:"profileId"`
 	// ProfileName — отображаемое имя профиля.
 	//
@@ -312,12 +323,18 @@ func (a *app) GetStatus() StatusView {
 }
 
 // ProfileView — профиль в виде, удобном для интерфейса.
+//
+// Пароля здесь нет и быть не может: служба его не возвращает (мера S6).
+// Интерфейсу достаточно знать, задан ли секрет, — этого хватает, чтобы
+// показать «пароль задан» и не предлагать подключиться профилем, у которого
+// учётных данных нет вовсе.
 type ProfileView struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Kind   string `json:"kind"`
-	Server string `json:"server"`
-	Port   uint32 `json:"port"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Server     string `json:"server"`
+	Port       uint32 `json:"port"`
+	HasSecrets bool   `json:"hasSecrets"`
 }
 
 // ListProfiles возвращает сохранённые профили.
@@ -336,17 +353,155 @@ func (a *app) ListProfiles() []ProfileView {
 		out = append(out, ProfileView{
 			ID: p.GetId(), Name: p.GetName(), Kind: kindName(p.GetKind()),
 			Server: p.GetServer(), Port: p.GetPort(),
+			HasSecrets: p.GetHasSecrets(),
 		})
 	}
 	a.rememberNames(out)
 	return out
 }
 
+// ProfileResult — исход операции над профилем.
+//
+// Ошибка возвращается значением, а не паникой и не пустым результатом:
+// фронтенду нужно показать причину отказа рядом с формой, где пользователь
+// её и допустил. Wails пробрасывает вторым возвращаемым значением error,
+// но тогда текст приходит в обработчик исключения и теряет связь с полем.
+type ProfileResult struct {
+	OK      bool   `json:"ok"`
+	Profile string `json:"profile"`
+	Error   string `json:"error"`
+}
+
+// ImportProfileFromLink создаёт профиль из ссылки.
+func (a *app) ImportProfileFromLink(id, name, link string) ProfileResult {
+	return a.importProfile(id, name, link)
+}
+
+// ChooseProfileFile открывает диалог выбора файла и возвращает его путь.
+//
+// Отдельный метод, а не часть импорта: диалог обязан открываться из потока
+// пользовательского интерфейса, а чтение файла и обращение к службе — работа
+// с задержкой. Разделение также позволяет фронтенду показать выбранный путь
+// до того, как что-либо будет сохранено.
+//
+// Пустая строка означает, что пользователь закрыл диалог. Это не ошибка.
+func (a *app) ChooseProfileFile() string {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Выберите файл конфигурации",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Конфигурации VPN", Pattern: "*.conf;*.awg.conf;*.wg.conf;*.txt"},
+			{DisplayName: "Все файлы", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// ImportProfileFromFile читает файл конфигурации и создаёт профиль.
+//
+// Если имя не задано, берётся имя файла без расширений. Формат wg-quick
+// своего имени не несёт, и без этой подстановки профиль назывался бы по типу
+// протокола — «amneziawg», одинаково для всех серверов. Имя файла же обычно
+// осмысленно: провайдер называет его так же, как сервер.
+func (a *app) ImportProfileFromFile(id, name, path string) ProfileResult {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ProfileResult{Error: errText(err)}
+	}
+	if strings.TrimSpace(name) == "" {
+		name = nameFromPath(path)
+	}
+	return a.importProfile(id, name, string(raw))
+}
+
+// nameFromPath выводит имя профиля из пути к файлу.
+//
+// Отсекаются ВСЕ расширения, а не одно: «test2-ams1.awg.conf» должно дать
+// «test2-ams1», а не «test2-ams1.awg».
+func nameFromPath(path string) string {
+	base := filepath.Base(path)
+	if i := strings.Index(base, "."); i > 0 {
+		base = base[:i]
+	}
+	return base
+}
+
+// importProfile — общее тело обоих способов импорта.
+//
+// ⚠️ Содержимое НЕ разбирается здесь. Оно уходит в службу как есть: разбор
+// недоверенного ввода — её работа (мера S3), а секреты не должны двигаться
+// в обратную сторону (мера S6).
+func (a *app) importProfile(id, name, content string) ProfileResult {
+	cli := a.client()
+	if cli == nil {
+		return ProfileResult{Error: "нет связи со службой"}
+	}
+
+	p, err := cli.ImportProfile(context.Background(), id, name, content)
+	if err != nil {
+		return ProfileResult{Error: errText(err)}
+	}
+	a.ListProfiles() // обновить кэш имён: статус придёт с идентификатором
+	return ProfileResult{OK: true, Profile: p.GetId()}
+}
+
+// RenameProfile меняет отображаемое имя профиля.
+//
+// Секреты при этом сохраняются: служба принимает пустой пароль как «оставить
+// прежний». Иначе переименование стирало бы учётные данные — интерфейс не
+// может прислать обратно то, чего никогда не получал (ADR-004).
+func (a *app) RenameProfile(id, name string) ProfileResult {
+	cli := a.client()
+	if cli == nil {
+		return ProfileResult{Error: "нет связи со службой"}
+	}
+
+	items, err := cli.ListProfiles(context.Background())
+	if err != nil {
+		return ProfileResult{Error: errText(err)}
+	}
+	var found *pb.Profile
+	for _, p := range items {
+		if p.GetId() == id {
+			found = p
+			break
+		}
+	}
+	if found == nil {
+		return ProfileResult{Error: "профиль не найден"}
+	}
+
+	found.Name = name
+	if _, err := cli.PutProfile(context.Background(), found); err != nil {
+		return ProfileResult{Error: errText(err)}
+	}
+	a.ListProfiles()
+	return ProfileResult{OK: true, Profile: id}
+}
+
+// RemoveProfile удаляет профиль.
+func (a *app) RemoveProfile(id string) ProfileResult {
+	cli := a.client()
+	if cli == nil {
+		return ProfileResult{Error: "нет связи со службой"}
+	}
+	if err := cli.RemoveProfile(context.Background(), id); err != nil {
+		return ProfileResult{Error: errText(err)}
+	}
+	a.ListProfiles()
+	return ProfileResult{OK: true, Profile: id}
+}
+
 // Connect подключается по профилю.
 //
 // policy: "all-except" — всё через туннель, кроме исключений;
 // "only-selected" — только выбранное через туннель.
-func (a *app) Connect(profileID, policy string) StatusView {
+//
+// mode: "proxy" — локальный прокси, приложения направляются вручную;
+// "tunnel" — сетевой адаптер, весь трафик системы идёт через туннель.
+func (a *app) Connect(profileID, policy, mode string) StatusView {
 	cli := a.client()
 	if cli == nil {
 		return StatusView{State: "unlinked", Error: "нет связи со службой"}
@@ -357,8 +512,13 @@ func (a *app) Connect(profileID, policy string) StatusView {
 		action = pb.Action_ACTION_DIRECT
 	}
 
+	wireMode := pb.Mode_MODE_PROXY
+	if mode == "tunnel" {
+		wireMode = pb.Mode_MODE_TUNNEL
+	}
+
 	st, err := cli.Connect(context.Background(), profileID,
-		&pb.Policy{DefaultAction: action}, 0)
+		&pb.Policy{DefaultAction: action}, 0, wireMode)
 	if err != nil {
 		return StatusView{State: "idle", Error: errText(err)}
 	}
@@ -392,6 +552,7 @@ func (a *app) statusView(s *pb.Status) StatusView {
 		Listen:    s.GetListenAddress(),
 		Error:     s.GetError(),
 	}
+	v.Mode = modeName(s.GetMode())
 	v.ProfileName = a.profileName(v.ProfileID)
 	if p := s.GetPolicy(); p != nil {
 		v.RuleCount = len(p.GetRules())
@@ -423,11 +584,19 @@ func stateName(s pb.SessionState) string {
 	}
 }
 
-func kindName(k pb.Kind) string {
-	if k == pb.Kind_KIND_SOCKS5 {
-		return "socks5"
+// kindName — тонкая обёртка над общим отображением.
+//
+// Своей таблицы здесь нет намеренно: три копии одного соответствия уже
+// разошлись однажды, см. client.KindName.
+func kindName(k pb.Kind) string { return client.KindName(k) }
+
+// modeName переводит режим из контракта в стабильный идентификатор для
+// интерфейса. Перевод на язык пользователя — в словаре i18n, не здесь.
+func modeName(m pb.Mode) string {
+	if m == pb.Mode_MODE_TUNNEL {
+		return "tunnel"
 	}
-	return "unknown"
+	return "proxy"
 }
 
 func errText(err error) string {

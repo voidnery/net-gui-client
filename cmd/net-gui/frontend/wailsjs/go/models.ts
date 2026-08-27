@@ -22,12 +22,29 @@ export namespace main {
 	        this.problem = source["problem"];
 	    }
 	}
+	export class ProfileResult {
+	    ok: boolean;
+	    profile: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProfileResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.profile = source["profile"];
+	        this.error = source["error"];
+	    }
+	}
 	export class ProfileView {
 	    id: string;
 	    name: string;
 	    kind: string;
 	    server: string;
 	    port: number;
+	    hasSecrets: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProfileView(source);
@@ -40,10 +57,12 @@ export namespace main {
 	        this.kind = source["kind"];
 	        this.server = source["server"];
 	        this.port = source["port"];
+	        this.hasSecrets = source["hasSecrets"];
 	    }
 	}
 	export class StatusView {
 	    state: string;
+	    mode: string;
 	    profileId: string;
 	    profileName: string;
 	    listen: string;
@@ -58,6 +77,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.state = source["state"];
+	        this.mode = source["mode"];
 	        this.profileId = source["profileId"];
 	        this.profileName = source["profileName"];
 	        this.listen = source["listen"];

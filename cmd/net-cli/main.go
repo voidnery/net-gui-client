@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bbesport/net-gui-client/internal/client"
 	"github.com/bbesport/net-gui-client/internal/ipc"
 	pb "github.com/bbesport/net-gui-client/proto/netgui/v1"
 
@@ -223,6 +224,7 @@ func cmdConnect(ctx context.Context, c *conn, args []string) error {
 	directList := fs.String("direct", "", "домены и подсети, идущие напрямую")
 	proxyList := fs.String("proxy", "", "домены и подсети, идущие через туннель")
 	port := fs.Uint("port", 0, "порт локального inbound")
+	modeName := fs.String("mode", "proxy", "proxy | tunnel")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -232,19 +234,33 @@ func cmdConnect(ctx context.Context, c *conn, args []string) error {
 		return err
 	}
 
+	mode, err := parseMode(*modeName)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	st, err := c.sessions.Connect(ctx, &pb.ConnectRequest{
-		ProfileId: id, Policy: policy, ListenPort: uint32(*port),
+		ProfileId: id, Policy: policy, ListenPort: uint32(*port), Mode: mode,
 	})
 	if err != nil {
 		return err
 	}
 	printStatus(st)
-	if st.GetState() == pb.SessionState_SESSION_STATE_CONNECTED {
-		fmt.Printf("\nНаправьте приложения на HTTP или SOCKS5 прокси %s\n", st.GetListenAddress())
+
+	if st.GetState() != pb.SessionState_SESSION_STATE_CONNECTED {
+		return nil
 	}
+	if st.GetMode() == pb.Mode_MODE_TUNNEL {
+		// В режиме туннеля направлять приложения никуда не нужно: трафик
+		// системы уже идёт через туннель. Прежняя подсказка в этом режиме
+		// вводила бы в заблуждение.
+		fmt.Printf("\nВесь трафик системы идёт через туннель.\n")
+		return nil
+	}
+	fmt.Printf("\nНаправьте приложения на HTTP или SOCKS5 прокси %s\n", st.GetListenAddress())
 	return nil
 }
 
@@ -262,7 +278,7 @@ func cmdDisconnect(ctx context.Context, c *conn) error {
 
 func cmdProfile(ctx context.Context, c *conn, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("нужна подкоманда: list | add | rm")
+		return fmt.Errorf("нужна подкоманда: list | add | import | rm")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -277,11 +293,56 @@ func cmdProfile(ctx context.Context, c *conn, args []string) error {
 			fmt.Println("профилей нет")
 			return nil
 		}
-		fmt.Printf("%-16s %-24s %-10s %s\n", "ID", "ИМЯ", "ТИП", "АДРЕС")
+		fmt.Printf("%-16s %-24s %-10s %-24s %s\n", "ID", "ИМЯ", "ТИП", "АДРЕС", "СЕКРЕТ")
 		for _, p := range resp.GetProfiles() {
-			fmt.Printf("%-16s %-24s %-10s %s:%d\n",
-				p.GetId(), p.GetName(), kindName(p.GetKind()), p.GetServer(), p.GetPort())
+			// Служба не возвращает секретов (мера S6), поэтому показываем
+			// только факт их наличия.
+			secret := "—"
+			if p.GetHasSecrets() {
+				secret = "задан"
+			}
+			addr := fmt.Sprintf("%s:%d", p.GetServer(), p.GetPort())
+			fmt.Printf("%-16s %-24s %-10s %-24s %s\n",
+				p.GetId(), p.GetName(), kindName(p.GetKind()), addr, secret)
 		}
+		return nil
+
+	case "import":
+		fs := flag.NewFlagSet("profile import", flag.ContinueOnError)
+		id := fs.String("id", "", "идентификатор")
+		name := fs.String("name", "", "отображаемое имя (пусто — взять из ссылки)")
+		file := fs.String("file", "", "файл конфигурации")
+		link := fs.String("link", "", "ссылка vless:// | hysteria2:// | socks5://")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *id == "" {
+			return fmt.Errorf("нужен -id")
+		}
+		if (*file == "") == (*link == "") {
+			return fmt.Errorf("укажите ровно одно: -file или -link")
+		}
+
+		content := *link
+		if *file != "" {
+			raw, err := os.ReadFile(*file)
+			if err != nil {
+				return fmt.Errorf("чтение %s: %w", *file, err)
+			}
+			content = string(raw)
+		}
+
+		// Содержимое уходит в службу неразобранным: разбор — недоверенный
+		// ввод, и по принципу P1 он выполняется на стороне службы.
+		resp, err := c.profiles.Import(ctx, &pb.ImportProfileRequest{
+			Id: *id, Name: *name, Content: content,
+		})
+		if err != nil {
+			return err
+		}
+		p := resp.GetProfile()
+		fmt.Printf("импортирован профиль %q: %s, %s:%d\n",
+			p.GetId(), kindName(p.GetKind()), p.GetServer(), p.GetPort())
 		return nil
 
 	case "add":
@@ -379,6 +440,11 @@ func printStatus(st *pb.Status) {
 	if st.GetListenAddress() != "" {
 		fmt.Printf("слушает:    %s\n", st.GetListenAddress())
 	}
+	// Режим показывается всегда, когда сессия есть: «подключено» означает
+	// разное в режиме прокси и в режиме туннеля.
+	if st.GetState() != pb.SessionState_SESSION_STATE_IDLE {
+		fmt.Printf("режим:      %s\n", modeName(st.GetMode()))
+	}
 	if p := st.GetPolicy(); p != nil && p.GetDefaultAction() != pb.Action_ACTION_UNSPECIFIED {
 		fmt.Printf("политика:   по умолчанию %s, правил %d\n",
 			actionName(p.GetDefaultAction()), len(p.GetRules()))
@@ -414,9 +480,36 @@ func actionName(a pb.Action) string {
 	}
 }
 
-func kindName(k pb.Kind) string {
-	if k == pb.Kind_KIND_SOCKS5 {
-		return "socks5"
+// kindName — тонкая обёртка над общим отображением.
+//
+// Своей таблицы здесь нет намеренно: три копии одного соответствия уже
+// разошлись однажды, см. client.KindName.
+func kindName(k pb.Kind) string { return client.KindName(k) }
+
+// parseMode разбирает режим из командной строки.
+//
+// Опечатка обязана давать отказ, а не молчаливый переход к прокси: разница
+// между режимами — это разница между «через туннель идёт выбранное
+// приложение» и «через туннель идёт всё».
+func parseMode(s string) (pb.Mode, error) {
+	switch s {
+	case "", "proxy":
+		return pb.Mode_MODE_PROXY, nil
+	case "tunnel":
+		return pb.Mode_MODE_TUNNEL, nil
+	default:
+		return pb.Mode_MODE_UNSPECIFIED, fmt.Errorf("неизвестный режим %q: proxy | tunnel", s)
 	}
-	return "?"
+}
+
+// modeName — подпись режима для человека.
+func modeName(m pb.Mode) string {
+	switch m {
+	case pb.Mode_MODE_TUNNEL:
+		return "туннель (весь трафик системы)"
+	case pb.Mode_MODE_PROXY:
+		return "прокси (только направленные приложения)"
+	default:
+		return "?"
+	}
 }

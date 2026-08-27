@@ -42,6 +42,41 @@ const ru: Dict = {
   'conn.rules': 'Правил',
   'conn.hint': 'Направьте приложения на этот адрес — HTTP или SOCKS5.',
 
+  'prof.title': 'Профили',
+  'prof.empty': 'Профилей нет. Добавьте первый — ссылкой или файлом конфигурации.',
+  'prof.add': 'Добавить профиль',
+  'prof.source': 'Откуда',
+  'prof.sourceLink': 'Ссылка',
+  'prof.sourceFile': 'Файл конфигурации',
+  'prof.link': 'Ссылка',
+  'prof.linkHint': 'vless://, hysteria2://, hy2:// или socks5://',
+  'prof.file': 'Файл',
+  'prof.choose': 'Выбрать…',
+  'prof.fileHint': 'Файл wg-quick для WireGuard и AmneziaWG.',
+  'prof.name': 'Имя',
+  'prof.nameHint': 'Необязательно. Пусто — взять из содержимого.',
+  'prof.import': 'Импортировать',
+  'prof.importing': 'Импорт…',
+  'prof.imported': 'Профиль добавлен',
+  'prof.secret': 'Учётные данные',
+  'prof.secretYes': 'заданы',
+  'prof.secretNo': 'нет',
+  'prof.rename': 'Переименовать',
+  'prof.remove': 'Удалить',
+  'prof.removeConfirm': 'Удалить профиль «{name}»? Восстановить его будет нельзя.',
+  'prof.save': 'Сохранить',
+  'prof.cancel': 'Отмена',
+  'prof.id': 'Идентификатор',
+  'prof.idHint': 'Выдаётся службой. Используется в net-cli.',
+  'prof.secretWarn': 'У профиля нет учётных данных — подключение, скорее всего, не пройдёт.',
+  'prof.noSecretsShown': 'Пароли и ключи не показываются: служба их не выдаёт.',
+
+  'conn.mode': 'Режим',
+  'mode.proxy': 'Прокси — только направленные приложения',
+  'mode.tunnel': 'Туннель — весь трафик системы',
+  'mode.tunnelHint': 'Меняет маршрутизацию всей системы. Требует прав администратора у службы.',
+  'conn.hintTunnel': 'Весь трафик системы идёт через туннель. Настраивать приложения не нужно.',
+
   'policy.all-except': 'Всё через туннель, кроме выбранного',
   'policy.only-selected': 'Только выбранное через туннель',
 
@@ -64,12 +99,30 @@ const en: Dict = {};
 
 const dicts: Record<Locale, Dict> = { ru, en };
 
+/** Значения для подстановки в строку: t('prof.removeConfirm', { name }). */
+export type Params = Record<string, string | number>;
+
 class I18n {
   locale = $state<Locale>('ru');
 
-  t(key: string): string {
+  /**
+   * Возвращает строку по ключу, подставляя значения вместо {имя}.
+   *
+   * Подстановка нужна потому, что склеивать перевод из кусков нельзя: порядок
+   * слов в разных языках разный, и «Удалить профиль » + name + «?» рассыпется
+   * при первом же переводе. Целая строка с местом для подстановки переводится
+   * как единое предложение.
+   */
+  t(key: string, params?: Params): string {
     const dict = dicts[this.locale];
-    return dict[key] ?? ru[key] ?? key;
+    let s = dict[key] ?? ru[key] ?? key;
+
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        s = s.split('{' + k + '}').join(String(v));
+      }
+    }
+    return s;
   }
 
   setLocale(l: Locale) {
@@ -80,6 +133,6 @@ class I18n {
 export const i18n = new I18n();
 
 /** Короткая форма для разметки. */
-export function t(key: string): string {
-  return i18n.t(key);
+export function t(key: string, params?: Params): string {
+  return i18n.t(key, params);
 }

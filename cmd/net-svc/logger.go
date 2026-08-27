@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"io"
+
+	"github.com/bbesport/net-gui-client/internal/secretlog"
 )
 
 // logger — минимальный журнал с уровнями.
@@ -25,7 +27,14 @@ type consoleLogger struct {
 	out io.Writer
 }
 
-func newConsoleLogger(out io.Writer) *consoleLogger { return &consoleLogger{out: out} }
+// newConsoleLogger оборачивает поток маскирующим слоем (мера S7).
+//
+// Обёртка ставится на уровне потока, а не отдельных вызовов: тогда она
+// действует и на то, что попадёт в этот поток мимо методов logger'а —
+// например, на текст ошибки, напечатанный сторонней библиотекой.
+func newConsoleLogger(out io.Writer) *consoleLogger {
+	return &consoleLogger{out: secretlog.Default().Writer(out)}
+}
 
 func (l *consoleLogger) Info(format string, args ...any) {
 	fmt.Fprintf(l.out, format+"\n", args...)

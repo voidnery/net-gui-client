@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/bbesport/net-gui-client/internal/platform/winservice"
+	"github.com/bbesport/net-gui-client/internal/secretlog"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -110,16 +111,29 @@ const (
 	eventIDError = 3
 )
 
+// Сообщения проходят через маскирование секретов (мера S7).
+//
+// Журнал событий Windows принимает готовую строку, а не поток, поэтому здесь
+// используется Mask, а не маскирующий Writer: разрыва секрета между вызовами
+// тут быть не может — каждое событие записывается целиком.
+//
+// Замечание о необратимости: журнал событий Windows читают средства
+// мониторинга и пересылают за пределы машины. Секрет, попавший туда, уже не
+// отозвать.
 func (l *eventLogger) Info(format string, args ...any) {
-	_ = l.elog.Info(eventIDInfo, fmt.Sprintf(format, args...))
+	_ = l.elog.Info(eventIDInfo, l.format(format, args...))
 }
 
 func (l *eventLogger) Warn(format string, args ...any) {
-	_ = l.elog.Warning(eventIDWarn, fmt.Sprintf(format, args...))
+	_ = l.elog.Warning(eventIDWarn, l.format(format, args...))
 }
 
 func (l *eventLogger) Error(format string, args ...any) {
-	_ = l.elog.Error(eventIDError, fmt.Sprintf(format, args...))
+	_ = l.elog.Error(eventIDError, l.format(format, args...))
+}
+
+func (l *eventLogger) format(format string, args ...any) string {
+	return secretlog.Default().Mask(fmt.Sprintf(format, args...))
 }
 
 // --- команды управления службой ----------------------------------------------

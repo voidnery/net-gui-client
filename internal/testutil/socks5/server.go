@@ -51,6 +51,10 @@ type Server struct {
 	// Учётные данные. Пустое имя означает «аутентификация не требуется».
 	user, pass string
 
+	// pin — отпечаток открытого ключа при запуске с TLS (см. tls.go).
+	// Пусто для обычного сервера.
+	pin string
+
 	mu       sync.Mutex
 	targets  []string
 	authFail int

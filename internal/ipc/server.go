@@ -5,7 +5,10 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strconv"
+	"strings"
 
+	"github.com/bbesport/net-gui-client/internal/corehost"
 	"github.com/bbesport/net-gui-client/internal/orchestration/profile"
 	"github.com/bbesport/net-gui-client/internal/orchestration/rules"
 	"github.com/bbesport/net-gui-client/internal/orchestration/session"
@@ -65,14 +68,152 @@ func (s *Server) List(_ context.Context, _ *pb.ListProfilesRequest) (*pb.ListPro
 }
 
 func (s *Server) Put(_ context.Context, req *pb.PutProfileRequest) (*pb.PutProfileResponse, error) {
-	p, err := profileFromPB(req.GetProfile())
+	incoming, err := profileFromPB(req.GetProfile())
 	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	if existing, ok := s.profiles.Get(incoming.ID); ok {
+		incoming, err = mergeProfile(existing, incoming)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+
+	if err := incoming.Validate(); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.profiles.Put(incoming); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &pb.PutProfileResponse{Profile: profileToPB(incoming)}, nil
+}
+
+// mergeProfile накладывает пришедшие от клиента поля на сохранённый профиль.
+//
+// Нужно потому, что контракт передаёт лишь часть полей профиля: имя, адрес,
+// порт, имя пользователя и пароль. Ключи WireGuard, параметры обфускации,
+// настройки TLS в нём не выражены — они попадают в хранилище только через
+// импорт. Прямая замена сохранённого профиля пришедшим стёрла бы всё это при
+// обычном переименовании.
+//
+// Пустой пароль означает «оставить прежний»: клиент не получает секретов в
+// ответах и потому не может прислать обратно то, чего не видел.
+func mergeProfile(existing, incoming profile.Profile) (profile.Profile, error) {
+	if incoming.Kind != existing.Kind {
+		// Смена протокола меняет и набор обязательных параметров, которых в
+		// контракте нет. Такой профиль следует создавать импортом заново,
+		// а не превращать один в другой.
+		return profile.Profile{}, fmt.Errorf(
+			"профиль %q уже существует с типом %q: смена типа на %q не поддерживается",
+			existing.ID, existing.Kind, incoming.Kind)
+	}
+
+	out := existing
+	out.Name = incoming.Name
+	out.Server = incoming.Server
+	out.Port = incoming.Port
+	out.Username = incoming.Username
+
+	if incoming.Password != "" {
+		out.Password = incoming.Password
+	}
+	return out, nil
+}
+
+// Import создаёт профиль из ссылки или файла конфигурации.
+//
+// Пустой идентификатор допустим: служба выдаёт его сама. Придумывать
+// идентификаторы на стороне клиента нельзя — только служба знает, какие уже
+// заняты, и только она может обеспечить неповторяемость.
+func (s *Server) Import(_ context.Context, req *pb.ImportProfileRequest) (*pb.ImportProfileResponse, error) {
+	id := req.GetId()
+	if id == "" {
+		// Разбираем с временным идентификатором: настоящий выводится из имени,
+		// а имя становится известно только после разбора.
+		draft, err := profile.Import(draftID, req.GetName(), req.GetContent())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		id = s.freeID(draft)
+	}
+
+	p, err := profile.Import(id, req.GetName(), req.GetContent())
+	if err != nil {
+		// Текст ошибки разбора уходит клиенту: он объясняет, что именно не так
+		// со ссылкой. Секретов в нём нет — разбор сообщает о структуре, а не
+		// о значениях.
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.profiles.Put(p); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &pb.PutProfileResponse{Profile: profileToPB(p)}, nil
+	return &pb.ImportProfileResponse{Profile: profileToPB(p)}, nil
+}
+
+// draftID — временный идентификатор для предварительного разбора.
+//
+// Значение подобрано так, чтобы его нельзя было спутать с настоящим именем
+// профиля: если оно всё же окажется именем, значит своего имени у содержимого
+// не было.
+const draftID = "draft-import"
+
+// freeID подбирает свободный идентификатор для профиля.
+//
+// Основа — имя профиля, приведённое к латинице и дефисам: идентификатор
+// виден пользователю в net-cli, и «ams1» удобнее, чем случайный набор знаков.
+// Если от имени ничего не осталось — например, оно целиком кириллическое, —
+// основой становится тип профиля.
+func (s *Server) freeID(p profile.Profile) string {
+	var base string
+
+	// Имя, совпавшее с временным идентификатором, означает, что своего имени у
+	// содержимого нет: разбор подставил вместо него то, что мы сами и передали.
+	// Так происходит с файлами wg-quick — формат имени не несёт. Без этой
+	// проверки идентификатор получался буквально «draft-import».
+	if p.Name != draftID {
+		base = slug(p.Name)
+	}
+	if base == "" {
+		base = string(p.Kind)
+	}
+
+	if _, taken := s.profiles.Get(base); !taken {
+		return base
+	}
+	// Повтор — обычное дело: два профиля одного провайдера легко называются
+	// одинаково. Нумеруем, а не отказываем.
+	for n := 2; ; n++ {
+		candidate := base + "-" + strconv.Itoa(n)
+		if _, taken := s.profiles.Get(candidate); !taken {
+			return candidate
+		}
+	}
+}
+
+// slug оставляет от строки только латинские буквы, цифры и дефисы.
+//
+// Транслитерация намеренно НЕ делается. Она требует выбора схемы (их
+// несколько, и они дают разные результаты), а выигрыш сомнителен:
+// «домашний-сервер» в качестве идентификатора читается не лучше, чем
+// «amneziawg-2», зато порождает вопрос, почему «й» превратилось именно в это.
+func slug(s string) string {
+	var b strings.Builder
+	lastDash := true // не начинать с дефиса
+
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-' || r == '_' || r == ' ' || r == '.':
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func (s *Server) Remove(_ context.Context, req *pb.RemoveProfileRequest) (*pb.RemoveProfileResponse, error) {
@@ -100,11 +241,17 @@ func (s *Server) Connect(ctx context.Context, req *pb.ConnectRequest) (*pb.Statu
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	mode, err := modeFromPB(req.GetMode())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	st, err := s.sessions.Connect(ctx, session.ConnectOptions{
 		Profile:    p,
 		Policy:     policy,
 		ListenAddr: netip.MustParseAddr("127.0.0.1"),
 		ListenPort: port,
+		Mode:       mode,
 	})
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -155,15 +302,24 @@ func (s *Server) Subscribe(_ *pb.SubscribeRequest, stream grpc.ServerStreamingSe
 // о protobuf, а контракт не должен диктовать внутренние типы. Заодно здесь
 // проходит валидация всего, что пришло извне, — часть меры S3.
 
+// profileToPB собирает профиль для отправки клиенту.
+//
+// ⚠️ Поле Password намеренно НЕ заполняется: секреты не покидают службу
+// (мера S6). Клиенту сообщается лишь факт наличия секрета — этого достаточно,
+// чтобы показать «пароль задан», и недостаточно, чтобы его узнать.
+//
+// Раньше пароль уходил клиенту в каждом ответе List. Канал защищён списком
+// доступа и проверкой клиента (мера S2), поэтому утечкой это не было, но
+// секрет копировался в чужой процесс без всякой надобности.
 func profileToPB(p profile.Profile) *pb.Profile {
 	return &pb.Profile{
-		Id:       p.ID,
-		Name:     p.Name,
-		Kind:     kindToPB(p.Kind),
-		Server:   p.Server,
-		Port:     uint32(p.Port),
-		Username: p.Username,
-		Password: p.Password,
+		Id:         p.ID,
+		Name:       p.Name,
+		Kind:       kindToPB(p.Kind),
+		Server:     p.Server,
+		Port:       uint32(p.Port),
+		Username:   p.Username,
+		HasSecrets: p.HasSecrets(),
 	}
 }
 
@@ -188,7 +344,11 @@ func profileFromPB(p *pb.Profile) (profile.Profile, error) {
 		Username: p.GetUsername(),
 		Password: p.GetPassword(),
 	}
-	return out, out.Validate()
+	// Проверка здесь НЕ выполняется: пришедшее может быть неполным — например,
+	// переименование профиля AmneziaWG не несёт ни ключей, ни параметров
+	// обфускации, потому что контракт их не передаёт. Полнота достигается
+	// слиянием с сохранённым профилем, и проверяется уже результат.
+	return out, nil
 }
 
 // portFromPB сужает uint32 из контракта до uint16.
@@ -203,18 +363,77 @@ func portFromPB(v uint32) (uint16, error) {
 	return uint16(v), nil
 }
 
+// kindTable — единственное соответствие между внутренним типом профиля и
+// значением контракта.
+//
+// Одна таблица вместо двух switch: расхождение между прямым и обратным
+// преобразованием иначе обнаруживается не при сборке, а при попытке
+// подключиться профилем, который «не того типа».
+var kindTable = []struct {
+	internal profile.Kind
+	wire     pb.Kind
+}{
+	{profile.KindSOCKS5, pb.Kind_KIND_SOCKS5},
+	{profile.KindHysteria2, pb.Kind_KIND_HYSTERIA2},
+	{profile.KindWireGuard, pb.Kind_KIND_WIREGUARD},
+	{profile.KindAmneziaWG, pb.Kind_KIND_AMNEZIAWG},
+	{profile.KindVLESS, pb.Kind_KIND_VLESS},
+}
+
 func kindToPB(k profile.Kind) pb.Kind {
-	if k == profile.KindSOCKS5 {
-		return pb.Kind_KIND_SOCKS5
+	for _, e := range kindTable {
+		if e.internal == k {
+			return e.wire
+		}
 	}
 	return pb.Kind_KIND_UNSPECIFIED
 }
 
 func kindFromPB(k pb.Kind) (profile.Kind, error) {
-	if k == pb.Kind_KIND_SOCKS5 {
-		return profile.KindSOCKS5, nil
+	for _, e := range kindTable {
+		if e.wire == k {
+			return e.internal, nil
+		}
 	}
 	return "", fmt.Errorf("неподдерживаемый тип профиля %s", k)
+}
+
+// modeTable — единственное соответствие между режимом ядра и значением
+// контракта. Одна таблица вместо двух switch, по той же причине, что и
+// kindTable: расхождение прямого и обратного преобразования иначе
+// обнаруживается не при сборке, а при работе не в том режиме.
+var modeTable = []struct {
+	internal corehost.Mode
+	wire     pb.Mode
+}{
+	{corehost.ModeProxy, pb.Mode_MODE_PROXY},
+	{corehost.ModeTunnel, pb.Mode_MODE_TUNNEL},
+}
+
+func modeToPB(m corehost.Mode) pb.Mode {
+	for _, e := range modeTable {
+		if e.internal == m {
+			return e.wire
+		}
+	}
+	return pb.Mode_MODE_PROXY
+}
+
+// modeFromPB переводит режим из контракта.
+//
+// MODE_UNSPECIFIED означает режим прокси, а не ошибку: клиент, собранный до
+// появления режимов, поля не заполняет, и его поведение обязано остаться
+// прежним.
+func modeFromPB(m pb.Mode) (corehost.Mode, error) {
+	if m == pb.Mode_MODE_UNSPECIFIED {
+		return corehost.ModeProxy, nil
+	}
+	for _, e := range modeTable {
+		if e.wire == m {
+			return e.internal, nil
+		}
+	}
+	return "", fmt.Errorf("неподдерживаемый режим %s", m)
 }
 
 func actionToPB(a rules.Action) pb.Action {
@@ -304,5 +523,6 @@ func statusToPB(s session.Status) *pb.Status {
 		ListenAddress: s.Listen,
 		Policy:        policyToPB(s.Policy),
 		Error:         s.Err,
+		Mode:          modeToPB(s.Mode),
 	}
 }

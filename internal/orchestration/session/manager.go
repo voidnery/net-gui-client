@@ -37,6 +37,15 @@ type Status struct {
 	Listen    string
 	Policy    rules.Policy
 	Err       string
+
+	// Mode — режим текущего соединения.
+	//
+	// Входит в состояние, а не только в запрос: «подключено» означает разное
+	// в режиме прокси и в режиме туннеля. В первом трафик идёт через туннель
+	// только у приложений, направленных на локальный порт; во втором — у всей
+	// системы. Не показывать это различие значит вводить пользователя в
+	// заблуждение относительно того, куда идёт его трафик.
+	Mode corehost.Mode
 }
 
 // Manager владеет активной сессией. Единственный на процесс.
@@ -131,6 +140,10 @@ type ConnectOptions struct {
 	ListenAddr netip.Addr
 	// ListenPort. Ноль — выбрать свободный порт автоматически.
 	ListenPort uint16
+
+	// Mode. Пусто означает режим прокси — так поведение остаётся прежним
+	// для всего кода, написанного до появления туннеля.
+	Mode corehost.Mode
 }
 
 // Connect поднимает сессию. Повторный вызов при активной сессии — ошибка:
@@ -169,6 +182,7 @@ func (m *Manager) Connect(ctx context.Context, opts ConnectOptions) (Status, err
 		ProfileID: opts.Profile.ID,
 		Listen:    listen,
 		Policy:    opts.Policy,
+		Mode:      opts.Mode,
 	})
 
 	core, err := corehost.Start(m.baseCtx, corehost.Config{
@@ -176,6 +190,7 @@ func (m *Manager) Connect(ctx context.Context, opts ConnectOptions) (Status, err
 		ListenPort: port,
 		Profile:    opts.Profile,
 		Policy:     opts.Policy,
+		Mode:       opts.Mode,
 	})
 	if err != nil {
 		m.setStatus(Status{State: StateIdle, Err: err.Error()})

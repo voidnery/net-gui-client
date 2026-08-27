@@ -7,16 +7,37 @@
    * прорабатывается отдельной итерацией по указанию заказчика.
    */
   import { t } from './lib/i18n.svelte';
-  import { SCREENS, type ScreenId, type StatusView, type ProfileView, type AppInfo } from './lib/types';
+  import {
+    SCREENS,
+    type ScreenId,
+    type StatusView,
+    type ProfileView,
+    type AppInfo,
+    type ProfileResult,
+    toStatusView,
+  } from './lib/types';
   import Connection from './lib/screens/Connection.svelte';
+  import Profiles from './lib/screens/Profiles.svelte';
   import Stub from './lib/screens/Stub.svelte';
 
-  import { GetAppInfo, GetStatus, ListProfiles, Connect, Disconnect } from '../wailsjs/go/main/app';
+  import {
+    GetAppInfo,
+    GetStatus,
+    ListProfiles,
+    Connect,
+    Disconnect,
+    ImportProfileFromLink,
+    ImportProfileFromFile,
+    ChooseProfileFile,
+    RenameProfile,
+    RemoveProfile,
+  } from '../wailsjs/go/main/app';
   import { EventsOn } from '../wailsjs/runtime/runtime';
 
   let screen = $state<ScreenId>('connection');
   let status = $state<StatusView>({
-    state: 'unlinked', profileId: '', listen: '', policy: '', ruleCount: 0, error: '',
+    state: 'unlinked', mode: 'proxy', profileId: '', listen: '', policy: '',
+    ruleCount: 0, error: '',
   });
   let profiles = $state<ProfileView[]>([]);
   let info = $state<AppInfo | null>(null);
@@ -28,14 +49,14 @@
 
   async function refresh() {
     info = await GetAppInfo();
-    status = await GetStatus();
+    status = toStatusView(await GetStatus());
     profiles = (await ListProfiles()) ?? [];
   }
 
   // Поток событий от службы. Именно ради него в ADR-004 выбран gRPC,
   // а не опрос: состояние приходит push'ом, интерфейс не «дёргает» службу.
   EventsOn('session:status', (s: StatusView) => {
-    status = s;
+    status = toStatusView(s);
   });
 
   EventsOn('service:link', async (e: { linked: boolean }) => {
@@ -51,10 +72,10 @@
     refresh();
   });
 
-  async function handleConnect(profileId: string, policy: string) {
+  async function handleConnect(profileId: string, policy: string, mode: string) {
     busy = true;
     try {
-      status = await Connect(profileId, policy);
+      status = toStatusView(await Connect(profileId, policy, mode));
       await refresh();
     } finally {
       busy = false;
@@ -64,12 +85,39 @@
   async function handleDisconnect() {
     busy = true;
     try {
-      status = await Disconnect();
+      status = toStatusView(await Disconnect());
       await refresh();
     } finally {
       busy = false;
     }
   }
+
+  /**
+   * Обработчики профилей.
+   *
+   * Идентификатор при импорте не передаётся: его выдаёт служба. Придумывать
+   * его здесь нельзя — только служба знает, какие уже заняты.
+   *
+   * После каждой удачной операции список перечитывается: он мог измениться и
+   * не только от нашего действия — тот же профиль мог добавить net-cli.
+   */
+  async function afterProfileChange(result: ProfileResult): Promise<ProfileResult> {
+    if (result.ok) {
+      await refresh();
+    }
+    return result;
+  }
+
+  const handleImportLink = async (name: string, link: string) =>
+    afterProfileChange(await ImportProfileFromLink('', name, link));
+
+  const handleImportFile = async (name: string, path: string) =>
+    afterProfileChange(await ImportProfileFromFile('', name, path));
+
+  const handleRename = async (id: string, name: string) =>
+    afterProfileChange(await RenameProfile(id, name));
+
+  const handleRemove = async (id: string) => afterProfileChange(await RemoveProfile(id));
 </script>
 
 <div class="app">
@@ -91,6 +139,16 @@
         {busy}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
+      />
+    {:else if screen === 'profiles'}
+      <Profiles
+        {profiles}
+        {linked}
+        onImportLink={handleImportLink}
+        onImportFile={handleImportFile}
+        onChooseFile={ChooseProfileFile}
+        onRename={handleRename}
+        onRemove={handleRemove}
       />
     {:else}
       <Stub title={t(current.labelKey)} iteration={current.iteration} />

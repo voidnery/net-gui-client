@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/bbesport/net-gui-client/internal/corehost/sockstls"
 	"github.com/bbesport/net-gui-client/internal/orchestration/profile"
 
 	"github.com/sagernet/sing-box/option"
@@ -45,17 +46,38 @@ func buildProxy(p profile.Profile) (buildResult, error) {
 }
 
 func buildSOCKS5(p profile.Profile) (buildResult, error) {
+	base := option.SOCKSOutboundOptions{
+		ServerOptions: option.ServerOptions{Server: p.Server, ServerPort: p.Port},
+		Version:       "5",
+		Username:      p.Username,
+		Password:      p.Password,
+	}
+
+	// SOCKS5 передаёт пароль открытым текстом, поэтому обёртка в TLS — не
+	// излишество. У встроенного в ядро типа socks секции TLS нет, и при
+	// включённом TLS используется наш тип socks-tls.
+	if p.TLS != nil && p.TLS.Enabled {
+		return buildResult{
+			ProxyTag: tagProxy,
+			Outbounds: []option.Outbound{{
+				Type: sockstls.Type,
+				Tag:  tagProxy,
+				Options: &sockstls.Options{
+					SOCKSOutboundOptions: base,
+					OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+						TLS: buildTLS(p, true),
+					},
+				},
+			}},
+		}, nil
+	}
+
 	return buildResult{
 		ProxyTag: tagProxy,
 		Outbounds: []option.Outbound{{
-			Type: "socks",
-			Tag:  tagProxy,
-			Options: &option.SOCKSOutboundOptions{
-				ServerOptions: option.ServerOptions{Server: p.Server, ServerPort: p.Port},
-				Version:       "5",
-				Username:      p.Username,
-				Password:      p.Password,
-			},
+			Type:    "socks",
+			Tag:     tagProxy,
+			Options: &base,
 		}},
 	}, nil
 }
@@ -173,6 +195,9 @@ func buildTLS(p profile.Profile, force bool) *option.OutboundTLSOptions {
 		ServerName: t.SNI,
 		Insecure:   t.Insecure,
 		ALPN:       badoption.Listable[string](t.ALPN),
+	}
+	if t.Fingerprint != "" {
+		out.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: t.Fingerprint}
 	}
 	if t.Pin != "" {
 		// Пиннинг отпечатка строже, чем проверка цепочки: он привязывает
